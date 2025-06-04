@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  # ============= API APPLICATION =============
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: social_network_api
+    restart: unless-stopped
+    environment:
+      # Database (votre PostgreSQL existant)
+      DATABASE_URL: ${DATABASE_URL}
+      
+      # JWT Secrets
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
+      
+      # Server
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 3000
+      
+      # Security
+      BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-12}
+      
+      # CORS
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      
+      # Rate Limiting
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-900000}
+      RATE_LIMIT_MAX_REQUESTS: ${RATE_LIMIT_MAX_REQUESTS:-100}
+      AUTH_RATE_LIMIT_WINDOW_MS: ${AUTH_RATE_LIMIT_WINDOW_MS:-900000}
+      AUTH_RATE_LIMIT_MAX_REQUESTS: ${AUTH_RATE_LIMIT_MAX_REQUESTS:-5}
+      
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      
+      # File Upload
+      MAX_FILE_SIZE: ${MAX_FILE_SIZE:-5242880}
+      UPLOAD_PATH: ./uploads
+      ALLOWED_FILE_TYPES: ${ALLOWED_FILE_TYPES:-image/jpeg,image/png,image/gif,image/webp}
+      
+      # API
+      API_BASE_URL: ${API_BASE_URL:-http://localhost:3000}
+      
+      # Features
+      MAX_POST_LENGTH: ${MAX_POST_LENGTH:-280}
+      MAX_MESSAGE_LENGTH: ${MAX_MESSAGE_LENGTH:-300}
+      MAX_BIO_LENGTH: ${MAX_BIO_LENGTH:-255}
+      DEFAULT_PAGE_SIZE: ${DEFAULT_PAGE_SIZE:-20}
+      MAX_PAGE_SIZE: ${MAX_PAGE_SIZE:-100}
+    ports:
+      - "${API_PORT:-3000}:3000"
+    volumes:
+      - uploads_data:/app/uploads
+      - logs_data:/app/logs
+    networks:
+      - social_network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+# ============= VOLUMES =============
+volumes:
+  uploads_data:
+    driver: local
+  logs_data:
+    driver: local
+
+# ============= NETWORKS =============
+networks:
+  social_network:
+    driver: bridge

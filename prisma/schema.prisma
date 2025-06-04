@@ -1,0 +1,120 @@
+// ============= PRISMA SCHEMA SIMPLIFIÉ =============
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============= USERS =============
+model User {
+  id_user       String   @id @default(cuid()) @map("id_user")
+  nom           String?  @db.VarChar(50)
+  prenom        String?  @db.VarChar(50)
+  username      String   @unique @db.VarChar(50)
+  mail          String   @unique @db.VarChar(100)
+  password_hash String   @db.VarChar(255)
+  telephone     String?  @db.VarChar(20)
+  bio           String?  @db.VarChar(255)
+  photo_profil  String?  @db.VarChar(255)
+  id_role       String   @map("id_role")
+  private       Boolean  @default(false)
+  certified     Boolean  @default(false)
+  is_active     Boolean  @default(true)
+  created_at    DateTime @default(now()) @db.Timestamp(6)
+  updated_at    DateTime @updatedAt @db.Timestamp(6)
+
+  // Relations principales
+  role              Role      @relation(fields: [id_role], references: [id_role])
+  posts             Post[]
+  likes             Like[]
+  messages_sent     Message[] @relation("MessageSender")
+  messages_received Message[] @relation("MessageReceiver")
+  followers         Follow[]  @relation("UserFollowers")
+  following         Follow[]  @relation("UserFollowing")
+
+  @@map("web_groupe_1_users")
+}
+
+// ============= ROLES =============
+model Role {
+  id_role String @id @default(cuid()) @map("id_role")
+  role    String @db.VarChar(50)
+
+  users User[]
+
+  @@map("web_groupe_1_roles")
+}
+
+// ============= POSTS =============
+model Post {
+  id_post         String    @id @default(cuid()) @map("id_post")
+  id_user         String    @map("id_user")
+  content         String    @db.VarChar(280)
+  id_message_type String?   @map("id_message_type")
+  active          Boolean   @default(true)
+  created_at      DateTime  @default(now()) @db.Timestamp(6)
+  updated_at      DateTime  @updatedAt @db.Timestamp(6)
+
+  // Relations
+  author User   @relation(fields: [id_user], references: [id_user], onDelete: Cascade)
+  likes  Like[]
+
+  @@map("web_groupe_1_post")
+}
+
+// ============= LIKES =============
+model Like {
+  id_user    String   @map("id_user")
+  id_post    String   @map("id_post")
+  active     Boolean  @default(true)
+  notif_view Boolean  @default(false)
+  created_at DateTime @default(now()) @db.Timestamp(6)
+  updated_at DateTime @updatedAt @db.Timestamp(6)
+
+  // Relations
+  user User @relation(fields: [id_user], references: [id_user], onDelete: Cascade)
+  post Post @relation(fields: [id_post], references: [id_post], onDelete: Cascade)
+
+  @@id([id_user, id_post])
+  @@map("web_groupe_1_likes")
+}
+
+// ============= FOLLOWS =============
+model Follow {
+  follower   String   @map("follower")
+  account    String   @map("account")
+  pending    Boolean  @default(false)
+  active     Boolean  @default(true)
+  notif_view Boolean  @default(false)
+  created_at DateTime @default(now()) @db.Timestamp(6)
+  updated_at DateTime @updatedAt @db.Timestamp(6)
+
+  // Relations
+  follower_user User @relation("UserFollowing", fields: [follower], references: [id_user], onDelete: Cascade)
+  followed_user User @relation("UserFollowers", fields: [account], references: [id_user], onDelete: Cascade)
+
+  @@id([follower, account])
+  @@map("web_groupe_1_follow")
+}
+
+// ============= MESSAGES PRIVÉS =============
+model Message {
+  id_message String    @id @default(cuid()) @map("id_message")
+  sender     String    @map("sender")
+  receiver   String    @map("receiver")
+  message    String    @db.VarChar(300)
+  send_at    DateTime  @default(now()) @db.Timestamp(6)
+  read_at    DateTime? @db.Timestamp(6)
+  active     Boolean   @default(true)
+  updated_at DateTime  @updatedAt @db.Timestamp(6)
+
+  // Relations
+  sender_user   User @relation("MessageSender", fields: [sender], references: [id_user], onDelete: Cascade)
+  receiver_user User @relation("MessageReceiver", fields: [receiver], references: [id_user], onDelete: Cascade)
+
+  @@map("web_groupe_1_messages_prives")
+}
