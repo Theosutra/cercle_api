@@ -1,3 +1,5 @@
+// Dans votre fichier server.js, modifiez la configuration CORS :
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -19,18 +21,51 @@ const messageRoutes = require('./src/routes/messageRoutes');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// CORS configuration plus permissive pour le développement
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Permettre les requêtes sans origin (ex: applications mobiles, Postman)
+    if (!origin) return callback(null, true);
+    
+    // Liste des origins autorisées
+    const allowedOrigins = [
+      'http://localhost:5173',
+      'http://localhost:3000',
+      'http://127.0.0.1:5173',
+      'http://127.0.0.1:3000',
+      process.env.FRONTEND_URL
+    ].filter(Boolean);
+    
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      logger.warn(`CORS origin rejected: ${origin}`);
+      callback(null, true); // Temporairement permissif en développement
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Authorization']
+};
+
 // Security middlewares
-app.use(helmet());
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
-  credentials: true
+app.use(helmet({
+  crossOriginEmbedderPolicy: false // Désactiver en développement si nécessaire
 }));
 
-// Rate limiting
+app.use(cors(corsOptions));
+
+// Middleware pour gérer les requêtes OPTIONS explicitement
+app.options('*', cors(corsOptions));
+
+// Rate limiting (plus permissif en développement)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
-  message: { error: 'Too many requests, please try again later.' }
+  max: process.env.NODE_ENV === 'production' ? 100 : 1000, // Plus permissif en dev
+  message: { error: 'Too many requests, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 app.use('/api/', limiter);
 
@@ -49,12 +84,28 @@ app.use('/api/v1/likes', likeRoutes);
 app.use('/api/v1/follow', followRoutes);
 app.use('/api/v1/messages', messageRoutes);
 
-// Health check
+// Health check avec plus d'informations
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     timestamp: new Date().toISOString(),
-    version: '1.0.0'
+    version: '1.0.0',
+    cors: 'enabled',
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+// Root endpoint pour test
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Social Network API is running!',
+    version: '1.0.0',
+    endpoints: {
+      health: '/health',
+      auth: '/api/v1/auth',
+      users: '/api/v1/users',
+      posts: '/api/v1/posts'
+    }
   });
 });
 
@@ -66,7 +117,9 @@ app.use('*', (req, res) => {
 
 app.listen(PORT, () => {
   logger.info(`🚀 Server running on port ${PORT}`);
-  logger.info(`📱 Frontend URL: ${process.env.FRONTEND_URL}`);
+  logger.info(`📱 Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
+  logger.info(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  logger.info(`🔗 API URL: http://localhost:${PORT}`);
 });
 
 module.exports = app;
