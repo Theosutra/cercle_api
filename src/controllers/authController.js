@@ -17,24 +17,56 @@ class AuthController {
 
       const { username, mail, password, nom, prenom, telephone } = value;
 
-      // Vérifier si l'utilisateur existe déjà
-      const existingUser = await prisma.user.findFirst({
+      // Vérifier si un compte ACTIF existe déjà avec le même mail
+      const existingUserByMail = await prisma.user.findFirst({
         where: {
-          OR: [{ mail }, { username }]
+          mail: mail,
+          is_active: true
         }
       });
 
-      if (existingUser) {
-        const field = existingUser.mail === mail ? 'email' : 'username';
+      if (existingUserByMail) {
         return res.status(409).json({ 
           error: 'User already exists',
-          message: `This ${field} is already taken`
+          message: 'This email is already taken by an active account'
         });
       }
 
-      // Récupérer le rôle par défaut
+      // Vérifier si un compte ACTIF existe déjà avec le même username
+      const existingUserByUsername = await prisma.user.findFirst({
+        where: {
+          username: username,
+          is_active: true
+        }
+      });
+
+      if (existingUserByUsername) {
+        return res.status(409).json({ 
+          error: 'User already exists',
+          message: 'This username is already taken by an active account'
+        });
+      }
+
+      // Vérifier si un compte ACTIF existe déjà avec le même numéro de téléphone (si fourni)
+      if (telephone) {
+        const existingUserByPhone = await prisma.user.findFirst({
+          where: {
+            telephone: telephone,
+            is_active: true
+          }
+        });
+
+        if (existingUserByPhone) {
+          return res.status(409).json({ 
+            error: 'User already exists',
+            message: 'This phone number is already taken by an active account'
+          });
+        }
+      }
+
+      // Récupérer le rôle USER par défaut
       const userRole = await prisma.role.findFirst({
-        where: { role: 'USER' }
+        where: { role: 'user' }
       });
 
       if (!userRole) {
@@ -42,39 +74,79 @@ class AuthController {
         return res.status(500).json({ error: 'System configuration error' });
       }
 
+      // Récupérer la langue française par défaut
+      const frLanguage = await prisma.langue.findFirst({
+        where: { langue: 'fr' }
+      });
+
+      if (!frLanguage) {
+        logger.error('French language not found in database');
+        return res.status(500).json({ error: 'System configuration error' });
+      }
+
+      // Récupérer le thème light par défaut
+      const lightTheme = await prisma.theme.findFirst({
+        where: { theme: 'light' }
+      });
+
+      if (!lightTheme) {
+        logger.error('Light theme not found in database');
+        return res.status(500).json({ error: 'System configuration error' });
+      }
+
       // Hasher le mot de passe
       const saltRounds = parseInt(process.env.BCRYPT_ROUNDS) || 12;
       const password_hash = await bcrypt.hash(password, saltRounds);
 
-      // Créer l'utilisateur
-      const user = await prisma.user.create({
-        data: {
-          username,
-          mail,
-          password_hash,
-          nom: nom || null,
-          prenom: prenom || null,
-          telephone: telephone || null,
-          id_role: userRole.id_role
-        },
-        select: {
-          id_user: true,
-          username: true,
-          mail: true,
-          nom: true,
-          prenom: true,
-          created_at: true
-        }
+      const now = new Date();
+
+      // Créer l'utilisateur avec une transaction pour assurer la cohérence
+      const result = await prisma.$transaction(async (tx) => {
+        // Créer l'utilisateur
+        const user = await tx.user.create({
+          data: {
+            username,
+            mail,
+            password_hash,
+            nom,
+            prenom,
+            telephone: telephone || null,
+            bio: null,
+            photo_profil: null,
+            id_role: userRole.id_role,
+            private: false, // Public par défaut
+            certified: false, // Non certifié par défaut
+            is_active: true,
+            created_at: now,
+            updated_at: now,
+            last_login: now
+          }
+        });
+
+        // Créer les préférences utilisateur par défaut
+        await tx.userPreferences.create({
+          data: {
+            id_user: user.id_user,
+            id_langue: frLanguage.id_langue,
+            email_notification: false, // False par défaut
+            id_theme: lightTheme.id_theme
+          }
+        });
+
+        return user;
       });
 
       // Générer les tokens
-      const { accessToken, refreshToken } = TokenService.generateTokens(user.id_user);
+      const { accessToken, refreshToken } = TokenService.generateTokens(result.id_user);
 
-      logger.info(`New user registered: ${user.username} (${user.mail})`);
+      logger.info(`New user registered: ${result.username} (${result.mail})`);
+
+      // Retourner les informations sans le hash du mot de passe
+      const { password_hash: _, ...userResponse } = result;
 
       res.status(201).json({
         message: 'User created successfully',
-        user,
+        user: userResponse,
         accessToken,
         refreshToken
       });
@@ -96,13 +168,18 @@ class AuthController {
 
       const { mail, password } = value;
 
-      // Rechercher l'utilisateur
-      const user = await prisma.user.findUnique({
-        where: { mail },
-        include: { role: true }
+      // Rechercher l'utilisateur ACTIF avec ce mail
+      const user = await prisma.user.findFirst({
+        where: { 
+          mail: mail,
+          is_active: true
+        },
+        include: { 
+          role: true 
+        }
       });
 
-      if (!user || !user.is_active) {
+      if (!user) {
         return res.status(401).json({ 
           error: 'Invalid credentials',
           message: 'Email or password is incorrect'
@@ -118,22 +195,53 @@ class AuthController {
         });
       }
 
+      // Vérifier si l'utilisateur n'a pas de ban en cours
+      const currentDate = new Date();
+      const activeBan = await prisma.userBannissement.findFirst({
+        where: {
+          user_banni: user.id_user,
+          debut_ban: { lte: currentDate },
+          fin_ban: { gte: currentDate }
+        }
+      });
+
+      if (activeBan) {
+        return res.status(403).json({ 
+          error: 'Account banned',
+          message: 'Your account is currently banned',
+          banInfo: {
+            reason: activeBan.raison,
+            bannedUntil: activeBan.fin_ban
+          }
+        });
+      }
+
+      // Mettre à jour last_login
+      await prisma.user.update({
+        where: { id_user: user.id_user },
+        data: { last_login: currentDate }
+      });
+
       // Générer les tokens
       const { accessToken, refreshToken } = TokenService.generateTokens(user.id_user);
 
       logger.info(`User logged in: ${user.username} (${user.mail})`);
 
+      // Retourner les informations sans le hash du mot de passe
+      const { password_hash: __, ...userResponse } = user;
+
       res.json({
         message: 'Login successful',
         user: {
-          id_user: user.id_user,
-          username: user.username,
-          mail: user.mail,
-          nom: user.nom,
-          prenom: user.prenom,
-          role: user.role.role,
-          certified: user.certified,
-          photo_profil: user.photo_profil
+          id_user: userResponse.id_user,
+          username: userResponse.username,
+          mail: userResponse.mail,
+          nom: userResponse.nom,
+          prenom: userResponse.prenom,
+          role: userResponse.role.role,
+          certified: userResponse.certified,
+          photo_profil: userResponse.photo_profil,
+          private: userResponse.private
         },
         accessToken,
         refreshToken
@@ -200,35 +308,32 @@ class AuthController {
         return res.status(400).json({ error: error.details[0].message });
       }
 
-      const { currentPassword, newPassword } = value;
+      const { password } = value;
 
-      // Récupérer l'utilisateur avec son mot de passe
-      const user = await prisma.user.findUnique({
-        where: { id_user: req.user.id_user },
-        select: { id_user: true, password_hash: true, username: true }
+      // Vérifier que l'utilisateur existe et est actif
+      const user = await prisma.user.findFirst({
+        where: { 
+          id_user: req.user.id_user,
+          is_active: true
+        },
+        select: { id_user: true, username: true }
       });
 
       if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-
-      // Vérifier le mot de passe actuel
-      const isCurrentPasswordValid = await bcrypt.compare(currentPassword, user.password_hash);
-      if (!isCurrentPasswordValid) {
-        return res.status(400).json({ 
-          error: 'Invalid current password',
-          message: 'The current password you entered is incorrect'
-        });
+        return res.status(404).json({ error: 'User not found or inactive' });
       }
 
       // Hasher le nouveau mot de passe
       const saltRounds = parseInt(process.env.BCRYPT_ROUNDS) || 12;
-      const newPasswordHash = await bcrypt.hash(newPassword, saltRounds);
+      const newPasswordHash = await bcrypt.hash(password, saltRounds);
 
-      // Mettre à jour le mot de passe
+      // Mettre à jour le mot de passe et updated_at
       await prisma.user.update({
         where: { id_user: req.user.id_user },
-        data: { password_hash: newPasswordHash }
+        data: { 
+          password_hash: newPasswordHash,
+          updated_at: new Date()
+        }
       });
 
       logger.info(`Password changed for user: ${user.username}`);
@@ -261,7 +366,7 @@ class AuthController {
   }
 
   /**
-   * Obtenir les informations de l'utilisateur connecté
+   * Obtenir toutes les informations de l'utilisateur connecté
    */
   static async me(req, res) {
     try {
@@ -269,11 +374,20 @@ class AuthController {
         where: { id_user: req.user.id_user },
         include: { 
           role: true,
+          user_preferences: {
+            include: {
+              langue: true,
+              theme: true
+            }
+          },
           _count: {
             select: {
               posts: { where: { active: true } },
               followers: { where: { active: true, pending: false } },
-              following: { where: { active: true, pending: false } }
+              following: { where: { active: true, pending: false } },
+              likes: true,
+              messages_sent: { where: { active: true } },
+              messages_received: { where: { active: true } }
             }
           }
         }
@@ -283,23 +397,22 @@ class AuthController {
         return res.status(404).json({ error: 'User not found' });
       }
 
+      // Retourner toutes les informations sans le hash du mot de passe
+      const { password_hash: ___, ...userInfo } = user;
+
       res.json({
-        id_user: user.id_user,
-        username: user.username,
-        mail: user.mail,
-        nom: user.nom,
-        prenom: user.prenom,
-        bio: user.bio,
-        photo_profil: user.photo_profil,
-        private: user.private,
-        certified: user.certified,
-        role: user.role.role,
-        created_at: user.created_at,
+        ...userInfo,
+        preferences: userInfo.user_preferences,
         stats: {
-          posts: user._count.posts,
-          followers: user._count.followers,
-          following: user._count.following
-        }
+          posts: userInfo._count.posts,
+          followers: userInfo._count.followers,
+          following: userInfo._count.following,
+          likes: userInfo._count.likes,
+          messagesSent: userInfo._count.messages_sent,
+          messagesReceived: userInfo._count.messages_received
+        },
+        user_preferences: undefined,
+        _count: undefined
       });
     } catch (error) {
       logger.error('Get me error:', error);
