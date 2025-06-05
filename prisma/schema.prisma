@@ -1,4 +1,5 @@
-// ============= PRISMA SCHEMA SIMPLIFIÉ =============
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
 
 generator client {
   provider = "prisma-client-js"
@@ -9,112 +10,293 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ============= USERS =============
-model User {
-  id_user       String   @id @default(cuid()) @map("id_user")
-  nom           String?  @db.VarChar(50)
-  prenom        String?  @db.VarChar(50)
-  username      String   @unique @db.VarChar(50)
-  mail          String   @unique @db.VarChar(100)
-  password_hash String   @db.VarChar(255)
-  telephone     String?  @db.VarChar(20)
-  bio           String?  @db.VarChar(255)
-  photo_profil  String?  @db.VarChar(255)
-  id_role       String   @map("id_role")
-  private       Boolean  @default(false)
-  certified     Boolean  @default(false)
-  is_active     Boolean  @default(true)
-  created_at    DateTime @default(now()) @db.Timestamp(6)
-  updated_at    DateTime @updatedAt @db.Timestamp(6)
+// ===== TABLES DE RÉFÉRENCE =====
 
-  // Relations principales
-  role              Role      @relation(fields: [id_role], references: [id_role])
-  posts             Post[]
-  likes             Like[]
-  messages_sent     Message[] @relation("MessageSender")
-  messages_received Message[] @relation("MessageReceiver")
-  followers         Follow[]  @relation("UserFollowers")
-  following         Follow[]  @relation("UserFollowing")
-
-  @@map("web_groupe_1_users")
-}
-
-// ============= ROLES =============
 model Role {
-  id_role String @id @default(cuid()) @map("id_role")
+  id_role Int    @id @default(autoincrement())
   role    String @db.VarChar(50)
-
+  
+  // Relations
   users User[]
-
-  @@map("web_groupe_1_roles")
+  
+  @@map("roles")
+  @@schema("cercle")
 }
 
-// ============= POSTS =============
-model Post {
-  id_post         String    @id @default(cuid()) @map("id_post")
-  id_user         String    @map("id_user")
-  content         String    @db.VarChar(280)
-  id_message_type String?   @map("id_message_type")
-  active          Boolean   @default(true)
-  created_at      DateTime  @default(now()) @db.Timestamp(6)
-  updated_at      DateTime  @updatedAt @db.Timestamp(6)
-
+model Langue {
+  id_langue Int    @id @default(autoincrement())
+  langue    String @db.VarChar(50)
+  
   // Relations
-  author User   @relation(fields: [id_user], references: [id_user], onDelete: Cascade)
-  likes  Like[]
-
-  @@map("web_groupe_1_post")
+  user_preferences UserPreferences[]
+  
+  @@map("langues") 
+  @@schema("cercle")
 }
 
-// ============= LIKES =============
-model Like {
-  id_user    String   @map("id_user")
-  id_post    String   @map("id_post")
-  active     Boolean  @default(true)
-  notif_view Boolean  @default(false)
-  created_at DateTime @default(now()) @db.Timestamp(6)
-  updated_at DateTime @updatedAt @db.Timestamp(6)
-
+model Theme {
+  id_theme Int    @id @default(autoincrement())
+  theme    String @db.VarChar(50)
+  
   // Relations
-  user User @relation(fields: [id_user], references: [id_user], onDelete: Cascade)
-  post Post @relation(fields: [id_post], references: [id_post], onDelete: Cascade)
-
-  @@id([id_user, id_post])
-  @@map("web_groupe_1_likes")
+  user_preferences UserPreferences[]
+  
+  @@map("themes")
+  @@schema("cercle")
 }
 
-// ============= FOLLOWS =============
+model MessageType {
+  id_message_type Int    @id @default(autoincrement())
+  message_type    String @db.VarChar(50)
+  
+  // Relations  
+  posts Post[]
+  
+  @@map("message_type")
+  @@schema("cercle")
+}
+
+model Tag {
+  id_tag Int    @id @default(autoincrement())
+  tag    String @db.VarChar(50)
+  
+  // Relations
+  post_tags PostTag[]
+  
+  @@map("tags")
+  @@schema("cercle")
+}
+
+model TypeMedia {
+  id_media Int    @id @default(autoincrement())
+  media    String @db.VarChar(50)
+  
+  // Relations
+  img_vid_posts ImgVidPost[]
+  
+  @@map("type_media")
+  @@schema("cercle")
+}
+
+// ===== TABLES PRINCIPALES =====
+
+model User {
+  id_user       Int       @id @default(autoincrement())
+  nom           String    @db.VarChar(50)
+  prenom        String    @db.VarChar(50)
+  username      String    @unique @db.VarChar(20)
+  mail          String    @unique @db.VarChar(50)
+  password_hash String    @db.VarChar(255)
+  telephone     String?   @db.VarChar(20)
+  bio           String?   @db.VarChar(255)
+  photo_profil  String?   @db.VarChar(255)
+  id_role       Int
+  private       Boolean
+  certified     Boolean
+  is_active     Boolean
+  created_at    DateTime
+  updated_at    DateTime
+  last_login    DateTime?
+  
+  // Relations
+  role Role @relation(fields: [id_role], references: [id_role])
+  
+  // Préférences utilisateur (relation 1:1)
+  user_preferences UserPreferences?
+  
+  // Posts créés par l'utilisateur
+  posts Post[]
+  
+  // Messages privés envoyés et reçus
+  messages_sent     MessagePrive[] @relation("MessageSender")
+  messages_received MessagePrive[] @relation("MessageReceiver")
+  
+  // Bannissements (utilisateur banni et celui qui a banni)
+  bannissements_recus   UserBannissement[] @relation("UserBanni")
+  bannissements_effectues UserBannissement[] @relation("BanniBy")
+  
+  // Relations de suivi (follower et account)
+  following Follow[] @relation("Follower")
+  followers Follow[] @relation("Account")
+  
+  // Likes donnés
+  likes Like[]
+  
+  // Mentions reçues
+  mentions Mention[]
+  
+  // Reports effectués
+  reports Report[]
+  
+  @@map("users")
+  @@schema("cercle")
+}
+
+model UserPreferences {
+  id_user            Int     @id
+  id_langue          Int
+  email_notification Boolean
+  id_theme           Int
+  
+  // Relations
+  user   User   @relation(fields: [id_user], references: [id_user])
+  langue Langue @relation(fields: [id_langue], references: [id_langue])
+  theme  Theme  @relation(fields: [id_theme], references: [id_theme])
+  
+  @@map("user_preferences")
+  @@schema("cercle")
+}
+
+model MessagePrive {
+  id_message Int       @id @default(autoincrement())
+  sender     Int
+  receiver   Int
+  message    String    @db.VarChar(2048)
+  send_at    DateTime
+  read_at    DateTime?
+  active     Boolean
+  updated_at DateTime
+  
+  // Relations
+  sender_user   User @relation("MessageSender", fields: [sender], references: [id_user])
+  receiver_user User @relation("MessageReceiver", fields: [receiver], references: [id_user])
+  
+  @@map("messages_prives")
+  @@schema("cercle")
+}
+
+model UserBannissement {
+  id_bannissement Int      @id @default(autoincrement())
+  user_banni      Int
+  banni_by        Int
+  raison          String   @db.VarChar(1024)
+  debut_ban       DateTime
+  fin_ban         DateTime
+  
+  // Relations
+  user_banni_rel User @relation("UserBanni", fields: [user_banni], references: [id_user])
+  banni_by_rel   User @relation("BanniBy", fields: [banni_by], references: [id_user])
+  
+  @@map("user_bannissements")
+  @@schema("cercle")
+}
+
 model Follow {
-  follower   String   @map("follower")
-  account    String   @map("account")
-  pending    Boolean  @default(false)
-  active     Boolean  @default(true)
-  notif_view Boolean  @default(false)
-  created_at DateTime @default(now()) @db.Timestamp(6)
-  updated_at DateTime @updatedAt @db.Timestamp(6)
-
+  follower   Int
+  account    Int
+  pending    Boolean
+  active     Boolean
+  notif_view Boolean
+  created_at DateTime
+  updated_at DateTime
+  
   // Relations
-  follower_user User @relation("UserFollowing", fields: [follower], references: [id_user], onDelete: Cascade)
-  followed_user User @relation("UserFollowers", fields: [account], references: [id_user], onDelete: Cascade)
-
+  follower_user User @relation("Follower", fields: [follower], references: [id_user])
+  account_user  User @relation("Account", fields: [account], references: [id_user])
+  
   @@id([follower, account])
-  @@map("web_groupe_1_follow")
+  @@map("follow")
+  @@schema("cercle")
 }
 
-// ============= MESSAGES PRIVÉS =============
-model Message {
-  id_message String    @id @default(cuid()) @map("id_message")
-  sender     String    @map("sender")
-  receiver   String    @map("receiver")
-  message    String    @db.VarChar(300)
-  send_at    DateTime  @default(now()) @db.Timestamp(6)
-  read_at    DateTime? @db.Timestamp(6)
-  active     Boolean   @default(true)
-  updated_at DateTime  @updatedAt @db.Timestamp(6)
-
+model Post {
+  id_post         Int      @id @default(autoincrement())
+  id_user         Int
+  post_parent     Int?
+  content         String   @db.VarChar(280)
+  id_message_type Int
+  active          Boolean
+  created_at      DateTime
+  updated_at      DateTime
+  
   // Relations
-  sender_user   User @relation("MessageSender", fields: [sender], references: [id_user], onDelete: Cascade)
-  receiver_user User @relation("MessageReceiver", fields: [receiver], references: [id_user], onDelete: Cascade)
+  user         User        @relation(fields: [id_user], references: [id_user])
+  message_type MessageType @relation(fields: [id_message_type], references: [id_message_type])
+  
+  // Auto-relation pour les réponses/commentaires
+  parent_post Post?  @relation("PostReplies", fields: [post_parent], references: [id_post])
+  replies     Post[] @relation("PostReplies")
+  
+  // Relations avec autres tables
+  post_tags     PostTag[]
+  img_vid_posts ImgVidPost[]
+  likes         Like[]
+  mentions      Mention[]
+  reports       Report[]
+  
+  @@map("post")
+  @@schema("cercle")
+}
 
-  @@map("web_groupe_1_messages_prives")
+model PostTag {
+  id_post Int
+  id_tag  Int
+  
+  // Relations
+  post Post @relation(fields: [id_post], references: [id_post])
+  tag  Tag  @relation(fields: [id_tag], references: [id_tag])
+  
+  @@id([id_post, id_tag])
+  @@map("post_tags")
+  @@schema("cercle")
+}
+
+model ImgVidPost {
+  id_img_vid_post Int    @id @default(autoincrement())
+  id_post         Int
+  id_media        Int
+  lien_media      String @db.VarChar(255)
+  
+  // Relations
+  post       Post      @relation(fields: [id_post], references: [id_post])
+  type_media TypeMedia @relation(fields: [id_media], references: [id_media])
+  
+  @@map("img_vid_post")
+  @@schema("cercle")
+}
+
+model Like {
+  id_user    Int
+  id_post    Int
+  active     Boolean
+  notif_view Boolean
+  created_at DateTime
+  updated_at DateTime
+  
+  // Relations
+  user User @relation(fields: [id_user], references: [id_user])
+  post Post @relation(fields: [id_post], references: [id_post])
+  
+  @@id([id_user, id_post])
+  @@map("likes")
+  @@schema("cercle")
+}
+
+model Mention {
+  id_user    Int
+  id_post    Int
+  notif_view Boolean
+  
+  // Relations
+  user User @relation(fields: [id_user], references: [id_user])
+  post Post @relation(fields: [id_post], references: [id_post])
+  
+  @@id([id_user, id_post])
+  @@map("mentions")
+  @@schema("cercle")
+}
+
+model Report {
+  id_user     Int
+  id_post     Int
+  reported_at DateTime
+  raison      String   @db.VarChar(255)
+  
+  // Relations
+  user User @relation(fields: [id_user], references: [id_user])
+  post Post @relation(fields: [id_post], references: [id_post])
+  
+  @@id([id_user, id_post])
+  @@map("report")
+  @@schema("cercle")
 }
