@@ -4,7 +4,7 @@ const { userParamsSchema, paginationSchema } = require('../validators/userValida
 
 class FollowController {
   /**
-   * Suivre un utilisateur
+   * Suivre un utilisateur ou demander à le suivre (compte privé)
    */
   static async followUser(req, res) {
     try {
@@ -15,27 +15,42 @@ class FollowController {
 
       const { id: userId } = req.params;
 
+      // Vérifier que l'utilisateur connecté existe et est actif
+      const currentUser = await prisma.user.findFirst({
+        where: { 
+          id_user: req.user.id_user,
+          is_active: true
+        },
+        select: { id_user: true, username: true }
+      });
+
+      if (!currentUser) {
+        return res.status(404).json({ error: 'Current user not found or inactive' });
+      }
+
       // Ne peut pas se suivre soi-même
       if (userId === req.user.id_user) {
         return res.status(400).json({ error: 'Cannot follow yourself' });
       }
 
-      // Vérifier que l'utilisateur cible existe
-      const targetUser = await prisma.user.findUnique({
-        where: { id_user: userId },
+      // Vérifier que l'utilisateur cible existe et est actif
+      const targetUser = await prisma.user.findFirst({
+        where: { 
+          id_user: userId,
+          is_active: true
+        },
         select: { 
           id_user: true, 
           username: true, 
-          private: true, 
-          is_active: true 
+          private: true
         }
       });
 
-      if (!targetUser || !targetUser.is_active) {
-        return res.status(404).json({ error: 'User not found' });
+      if (!targetUser) {
+        return res.status(404).json({ error: 'User not found or inactive' });
       }
 
-      // Vérifier si déjà suivi
+      // Vérifier si une relation existe déjà
       const existingFollow = await prisma.follow.findUnique({
         where: {
           follower_account: {
@@ -53,19 +68,28 @@ class FollowController {
         });
       }
 
+      const now = new Date();
+
       // Créer la relation de suivi
       const follow = await prisma.follow.create({
         data: {
           follower: req.user.id_user,
           account: userId,
-          pending: targetUser.private // En attente si le compte est privé
+          pending: targetUser.private, // En attente si le compte est privé
+          active: true,
+          notif_view: false, // Notification non vue
+          created_at: now,
+          updated_at: now
         }
       });
 
-      logger.info(`${req.user.username} ${targetUser.private ? 'requested to follow' : 'started following'} ${targetUser.username}`);
+      const message = targetUser.private ? 'Follow request sent' : 'User followed successfully';
+      const action = targetUser.private ? 'requested to follow' : 'started following';
+
+      logger.info(`${currentUser.username} ${action} ${targetUser.username}`);
 
       res.status(201).json({
-        message: targetUser.private ? 'Follow request sent' : 'User followed successfully',
+        message,
         isPending: follow.pending,
         targetUser: {
           id_user: targetUser.id_user,
@@ -74,6 +98,77 @@ class FollowController {
       });
     } catch (error) {
       logger.error('Follow user error:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Annuler une demande d'abonnement
+   */
+  static async cancelFollowRequest(req, res) {
+    try {
+      const { error: paramsError } = userParamsSchema.validate(req.params);
+      if (paramsError) {
+        return res.status(400).json({ error: paramsError.details[0].message });
+      }
+
+      const { id: userId } = req.params;
+
+      // Vérifier que l'utilisateur connecté existe et est actif
+      const currentUser = await prisma.user.findFirst({
+        where: { 
+          id_user: req.user.id_user,
+          is_active: true
+        },
+        select: { id_user: true, username: true }
+      });
+
+      if (!currentUser) {
+        return res.status(404).json({ error: 'Current user not found or inactive' });
+      }
+
+      // Vérifier que l'utilisateur cible existe et est actif
+      const targetUser = await prisma.user.findFirst({
+        where: { 
+          id_user: userId,
+          is_active: true
+        },
+        select: { id_user: true, username: true }
+      });
+
+      if (!targetUser) {
+        return res.status(404).json({ error: 'User not found or inactive' });
+      }
+
+      // Vérifier qu'une demande en attente existe
+      const pendingRequest = await prisma.follow.findFirst({
+        where: {
+          follower: req.user.id_user,
+          account: userId,
+          pending: true,
+          active: true
+        }
+      });
+
+      if (!pendingRequest) {
+        return res.status(404).json({ error: 'No pending follow request found' });
+      }
+
+      // Supprimer la relation
+      await prisma.follow.delete({
+        where: {
+          follower_account: {
+            follower: req.user.id_user,
+            account: userId
+          }
+        }
+      });
+
+      logger.info(`${currentUser.username} cancelled follow request to ${targetUser.username}`);
+
+      res.json({ message: 'Follow request cancelled successfully' });
+    } catch (error) {
+      logger.error('Cancel follow request error:', error);
       res.status(500).json({ error: 'Internal server error' });
     }
   }
@@ -89,6 +184,12 @@ class FollowController {
       }
 
       const { id: userId } = req.params;
+
+      // Vérifier que l'utilisateur cible existe et est actif (optionnel pour unfollow)
+      const targetUser = await prisma.user.findUnique({
+        where: { id_user: userId },
+        select: { username: true, is_active: true }
+      });
 
       const existingFollow = await prisma.follow.findUnique({
         where: {
@@ -112,16 +213,88 @@ class FollowController {
         }
       });
 
-      const targetUser = await prisma.user.findUnique({
-        where: { id_user: userId },
-        select: { username: true }
-      });
-
-      logger.info(`${req.user.username} unfollowed ${targetUser?.username}`);
+      logger.info(`${req.user.username} unfollowed ${targetUser?.username || `user ${userId}`}`);
 
       res.json({ message: 'User unfollowed successfully' });
     } catch (error) {
       logger.error('Unfollow user error:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Supprimer un abonné (retirer quelqu'un de ses followers)
+   */
+  static async removeFollower(req, res) {
+    try {
+      const { error: paramsError } = userParamsSchema.validate(req.params);
+      if (paramsError) {
+        return res.status(400).json({ error: paramsError.details[0].message });
+      }
+
+      const { id: followerId } = req.params;
+
+      // Vérifier que l'utilisateur connecté existe et est actif
+      const currentUser = await prisma.user.findFirst({
+        where: { 
+          id_user: req.user.id_user,
+          is_active: true
+        },
+        select: { id_user: true, username: true }
+      });
+
+      if (!currentUser) {
+        return res.status(404).json({ error: 'Current user not found or inactive' });
+      }
+
+      // Vérifier que le follower existe et est actif
+      const followerUser = await prisma.user.findFirst({
+        where: { 
+          id_user: followerId,
+          is_active: true
+        },
+        select: { id_user: true, username: true }
+      });
+
+      if (!followerUser) {
+        return res.status(404).json({ error: 'Follower not found or inactive' });
+      }
+
+      // Vérifier qu'une relation de suivi existe (follower suit l'utilisateur connecté)
+      const followRelation = await prisma.follow.findUnique({
+        where: {
+          follower_account: {
+            follower: followerId,
+            account: req.user.id_user
+          }
+        }
+      });
+
+      if (!followRelation) {
+        return res.status(404).json({ error: 'This user is not following you' });
+      }
+
+      // Supprimer la relation
+      await prisma.follow.delete({
+        where: {
+          follower_account: {
+            follower: followerId,
+            account: req.user.id_user
+          }
+        }
+      });
+
+      logger.info(`${currentUser.username} removed follower ${followerUser.username}`);
+
+      res.json({ 
+        message: 'Follower removed successfully',
+        removedUser: {
+          id_user: followerUser.id_user,
+          username: followerUser.username
+        }
+      });
+    } catch (error) {
+      logger.error('Remove follower error:', error);
       res.status(500).json({ error: 'Internal server error' });
     }
   }
@@ -145,14 +318,17 @@ class FollowController {
       const { page, limit } = value;
       const skip = (page - 1) * limit;
 
-      // Vérifier que l'utilisateur existe
-      const user = await prisma.user.findUnique({
-        where: { id_user: userId },
+      // Vérifier que l'utilisateur existe et est actif
+      const user = await prisma.user.findFirst({
+        where: { 
+          id_user: userId,
+          is_active: true
+        },
         select: { private: true, is_active: true }
       });
 
-      if (!user || !user.is_active) {
-        return res.status(404).json({ error: 'User not found' });
+      if (!user) {
+        return res.status(404).json({ error: 'User not found or inactive' });
       }
 
       // Vérifier les permissions pour les comptes privés
@@ -177,7 +353,10 @@ class FollowController {
           where: { 
             account: userId,
             active: true,
-            pending: false
+            pending: false,
+            follower_user: {
+              is_active: true // Filtrer uniquement les followers actifs
+            }
           },
           include: {
             follower_user: {
@@ -199,7 +378,10 @@ class FollowController {
           where: { 
             account: userId,
             active: true,
-            pending: false
+            pending: false,
+            follower_user: {
+              is_active: true
+            }
           }
         })
       ]);
@@ -245,14 +427,17 @@ class FollowController {
       const { page, limit } = value;
       const skip = (page - 1) * limit;
 
-      // Vérifier que l'utilisateur existe
-      const user = await prisma.user.findUnique({
-        where: { id_user: userId },
+      // Vérifier que l'utilisateur existe et est actif
+      const user = await prisma.user.findFirst({
+        where: { 
+          id_user: userId,
+          is_active: true
+        },
         select: { private: true, is_active: true }
       });
 
-      if (!user || !user.is_active) {
-        return res.status(404).json({ error: 'User not found' });
+      if (!user) {
+        return res.status(404).json({ error: 'User not found or inactive' });
       }
 
       // Vérifier les permissions pour les comptes privés
@@ -277,10 +462,13 @@ class FollowController {
           where: { 
             follower: userId,
             active: true,
-            pending: false
+            pending: false,
+            account_user: {
+              is_active: true // Filtrer uniquement les comptes suivis actifs
+            }
           },
           include: {
-            followed_user: {
+            account_user: {
               select: {
                 id_user: true,
                 username: true,
@@ -299,7 +487,10 @@ class FollowController {
           where: { 
             follower: userId,
             active: true,
-            pending: false
+            pending: false,
+            account_user: {
+              is_active: true
+            }
           }
         })
       ]);
@@ -308,7 +499,7 @@ class FollowController {
 
       res.json({
         following: following.map(follow => ({
-          ...follow.followed_user,
+          ...follow.account_user,
           followedAt: follow.created_at
         })),
         pagination: {
@@ -344,7 +535,10 @@ class FollowController {
           where: { 
             account: req.user.id_user,
             pending: true,
-            active: true
+            active: true,
+            follower_user: {
+              is_active: true // Filtrer uniquement les demandeurs actifs
+            }
           },
           include: {
             follower_user: {
@@ -366,7 +560,10 @@ class FollowController {
           where: { 
             account: req.user.id_user,
             pending: true,
-            active: true
+            active: true,
+            follower_user: {
+              is_active: true
+            }
           }
         })
       ]);
@@ -405,16 +602,29 @@ class FollowController {
 
       const { id: userId } = req.params;
 
-      const followRequest = await prisma.follow.findUnique({
+      // Vérifier que le demandeur existe et est actif
+      const requesterUser = await prisma.user.findFirst({
+        where: { 
+          id_user: userId,
+          is_active: true
+        },
+        select: { username: true }
+      });
+
+      if (!requesterUser) {
+        return res.status(404).json({ error: 'Requester not found or inactive' });
+      }
+
+      const followRequest = await prisma.follow.findFirst({
         where: {
-          follower_account: {
-            follower: userId,
-            account: req.user.id_user
-          }
+          follower: userId,
+          account: req.user.id_user,
+          pending: true,
+          active: true
         }
       });
 
-      if (!followRequest || !followRequest.pending) {
+      if (!followRequest) {
         return res.status(404).json({ error: 'Follow request not found' });
       }
 
@@ -425,15 +635,13 @@ class FollowController {
             account: req.user.id_user
           }
         },
-        data: { pending: false }
+        data: { 
+          pending: false,
+          updated_at: new Date()
+        }
       });
 
-      const requesterUser = await prisma.user.findUnique({
-        where: { id_user: userId },
-        select: { username: true }
-      });
-
-      logger.info(`${req.user.username} accepted follow request from ${requesterUser?.username}`);
+      logger.info(`${req.user.username} accepted follow request from ${requesterUser.username}`);
 
       res.json({ message: 'Follow request accepted' });
     } catch (error) {
@@ -454,16 +662,29 @@ class FollowController {
 
       const { id: userId } = req.params;
 
-      const followRequest = await prisma.follow.findUnique({
+      // Vérifier que le demandeur existe et est actif
+      const requesterUser = await prisma.user.findFirst({
+        where: { 
+          id_user: userId,
+          is_active: true
+        },
+        select: { username: true }
+      });
+
+      if (!requesterUser) {
+        return res.status(404).json({ error: 'Requester not found or inactive' });
+      }
+
+      const followRequest = await prisma.follow.findFirst({
         where: {
-          follower_account: {
-            follower: userId,
-            account: req.user.id_user
-          }
+          follower: userId,
+          account: req.user.id_user,
+          pending: true,
+          active: true
         }
       });
 
-      if (!followRequest || !followRequest.pending) {
+      if (!followRequest) {
         return res.status(404).json({ error: 'Follow request not found' });
       }
 
@@ -476,16 +697,57 @@ class FollowController {
         }
       });
 
-      const requesterUser = await prisma.user.findUnique({
-        where: { id_user: userId },
-        select: { username: true }
-      });
-
-      logger.info(`${req.user.username} rejected follow request from ${requesterUser?.username}`);
+      logger.info(`${req.user.username} rejected follow request from ${requesterUser.username}`);
 
       res.json({ message: 'Follow request rejected' });
     } catch (error) {
       logger.error('Reject follow request error:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Marquer une notification de suivi comme lue
+   */
+  static async markFollowNotificationAsRead(req, res) {
+    try {
+      const { error: paramsError } = userParamsSchema.validate(req.params);
+      if (paramsError) {
+        return res.status(400).json({ error: paramsError.details[0].message });
+      }
+
+      const { id: userId } = req.params;
+
+      // Vérifier que la relation existe et que l'utilisateur connecté est le destinataire
+      const followRelation = await prisma.follow.findUnique({
+        where: {
+          follower_account: {
+            follower: userId,
+            account: req.user.id_user
+          }
+        }
+      });
+
+      if (!followRelation) {
+        return res.status(404).json({ error: 'Follow relation not found' });
+      }
+
+      await prisma.follow.update({
+        where: {
+          follower_account: {
+            follower: userId,
+            account: req.user.id_user
+          }
+        },
+        data: { 
+          notif_view: true,
+          updated_at: new Date()
+        }
+      });
+
+      res.json({ message: 'Follow notification marked as read' });
+    } catch (error) {
+      logger.error('Mark follow notification as read error:', error);
       res.status(500).json({ error: 'Internal server error' });
     }
   }
