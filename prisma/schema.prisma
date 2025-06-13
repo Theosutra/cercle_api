@@ -72,7 +72,8 @@ model TypeMedia {
   media    String @db.VarChar(50)
   
   // Relations
-  img_vid_posts ImgVidPost[]
+  img_vid_post ImgVidPost[]
+  img_vid_msg ImgVidMsg[]
   
   @@map("type_media")
   @@schema("cercle")
@@ -160,6 +161,8 @@ model MessagePrive {
   // Relations
   sender_user   User @relation("MessageSender", fields: [sender], references: [id_user])
   receiver_user User @relation("MessageReceiver", fields: [receiver], references: [id_user])
+
+  img_vid_msg ImgVidMsg[]
   
   @@map("messages_prives")
   @@schema("cercle")
@@ -219,7 +222,7 @@ model Post {
   
   // Relations avec autres tables
   post_tags     PostTag[]
-  img_vid_posts ImgVidPost[]
+  img_vid_post  ImgVidPost[]
   likes         Like[]
   mentions      Mention[]
   reports       Report[]
@@ -252,6 +255,20 @@ model ImgVidPost {
   type_media TypeMedia @relation(fields: [id_media], references: [id_media])
   
   @@map("img_vid_post")
+  @@schema("cercle")
+}
+
+model ImgVidMsg {
+  id_img_vid_msg Int    @id @default(autoincrement())
+  id_message     Int
+  id_media       Int
+  lien_media     String @db.VarChar(255)
+  
+  // Relations
+  message    MessagePrive @relation(fields: [id_message], references: [id_message])
+  type_media TypeMedia    @relation(fields: [id_media], references: [id_media])
+  
+  @@map("img_vid_msg")
   @@schema("cercle")
 }
 
