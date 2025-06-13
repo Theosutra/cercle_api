@@ -1,5 +1,3 @@
-// Dans votre fichier server.js, modifiez la configuration CORS :
-
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -59,15 +57,20 @@ app.use(cors(corsOptions));
 // Middleware pour gérer les requêtes OPTIONS explicitement
 app.options('*', cors(corsOptions));
 
-// Rate limiting (plus permissif en développement)
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: process.env.NODE_ENV === 'production' ? 100 : 1000, // Plus permissif en dev
-  message: { error: 'Too many requests, please try again later.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-app.use('/api/', limiter);
+// 🚨 RATE LIMITING - DÉSACTIVÉ EN DÉVELOPPEMENT
+if (process.env.NODE_ENV === 'production') {
+  const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // Limite en production
+    message: { error: 'Too many requests, please try again later.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+  app.use('/api/', limiter);
+  logger.info('✅ Rate limiting enabled for production');
+} else {
+  logger.info('⚠️  Rate limiting DISABLED in development mode');
+}
 
 // General middlewares
 app.use(morgan('combined', { 
@@ -91,7 +94,8 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     version: '1.0.0',
     cors: 'enabled',
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    rateLimiting: process.env.NODE_ENV === 'production' ? 'enabled' : 'disabled'
   });
 });
 
@@ -100,11 +104,14 @@ app.get('/', (req, res) => {
   res.json({
     message: 'Social Network API is running!',
     version: '1.0.0',
+    environment: process.env.NODE_ENV || 'development',
+    rateLimiting: process.env.NODE_ENV === 'production' ? 'enabled' : 'disabled',
     endpoints: {
       health: '/health',
       auth: '/api/v1/auth',
       users: '/api/v1/users',
-      posts: '/api/v1/posts'
+      posts: '/api/v1/posts',
+      messages: '/api/v1/messages'
     }
   });
 });
@@ -120,6 +127,12 @@ app.listen(PORT, () => {
   logger.info(`📱 Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
   logger.info(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   logger.info(`🔗 API URL: http://localhost:${PORT}`);
+  
+  if (process.env.NODE_ENV === 'production') {
+    logger.info(`🔒 Rate limiting: ENABLED`);
+  } else {
+    logger.info(`🔓 Rate limiting: DISABLED (development mode)`);
+  }
 });
 
 module.exports = app;

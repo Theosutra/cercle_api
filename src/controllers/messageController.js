@@ -5,9 +5,12 @@ const { userParamsSchema, paginationSchema } = require('../validators/userValida
 
 // Schémas de validation pour les messages
 const sendMessageSchema = Joi.object({
-  receiver: Joi.string().required().messages({
+  receiver: Joi.alternatives().try(
+    Joi.string().pattern(/^\d+$/),
+    Joi.number().integer().positive()
+  ).required().messages({
     'any.required': 'Receiver ID is required',
-    'string.base': 'Receiver ID must be a string'
+    'alternatives.match': 'Receiver ID must be a valid user ID'
   }),
   message: Joi.string().min(1).max(2048).required().messages({
     'string.min': 'Message cannot be empty',
@@ -25,11 +28,31 @@ const updateMessageSchema = Joi.object({
 });
 
 const messageParamsSchema = Joi.object({
-  messageId: Joi.string().required().messages({
+  messageId: Joi.alternatives().try(
+    Joi.string().pattern(/^\d+$/),
+    Joi.number().integer().positive()
+  ).required().messages({
     'any.required': 'Message ID is required',
-    'string.base': 'Message ID must be a string'
+    'alternatives.match': 'Message ID must be a valid ID'
   })
 });
+
+// Fonction utilitaire pour convertir les IDs
+const parseUserId = (id) => {
+  const parsed = parseInt(id, 10);
+  if (isNaN(parsed) || parsed <= 0) {
+    throw new Error('Invalid user ID format');
+  }
+  return parsed;
+};
+
+const parseMessageId = (id) => {
+  const parsed = parseInt(id, 10);
+  if (isNaN(parsed) || parsed <= 0) {
+    throw new Error('Invalid message ID format');
+  }
+  return parsed;
+};
 
 class MessageController {
   /**
@@ -42,7 +65,15 @@ class MessageController {
         return res.status(400).json({ error: error.details[0].message });
       }
 
-      const { receiver, message } = value;
+      const { receiver: receiverParam, message } = value;
+
+      // Convertir les IDs en entiers
+      let receiverId;
+      try {
+        receiverId = parseUserId(receiverParam);
+      } catch (error) {
+        return res.status(400).json({ error: 'Invalid receiver ID format' });
+      }
 
       // Vérifier que l'utilisateur connecté existe et est actif
       const currentUser = await prisma.user.findFirst({
@@ -57,35 +88,56 @@ class MessageController {
         return res.status(404).json({ error: 'Current user not found or inactive' });
       }
 
-      // Ne peut pas s'envoyer un message à soi-même
-      if (receiver === req.user.id_user) {
-        return res.status(400).json({ error: 'Cannot send message to yourself' });
-      }
-
       // Vérifier que le destinataire existe et est actif
       const receiverUser = await prisma.user.findFirst({
         where: { 
-          id_user: receiver,
+          id_user: receiverId,
           is_active: true
         },
-        select: { id_user: true, username: true }
+        select: { 
+          id_user: true, 
+          username: true, 
+          private: true,
+          photo_profil: true 
+        }
       });
 
       if (!receiverUser) {
         return res.status(404).json({ error: 'Receiver not found or inactive' });
       }
 
-      const now = new Date();
+      // Empêcher l'envoi de messages à soi-même
+      if (currentUser.id_user === receiverId) {
+        return res.status(400).json({ error: 'Cannot send message to yourself' });
+      }
+
+      // Pour les comptes privés, vérifier que l'utilisateur suit le destinataire
+      if (receiverUser.private) {
+        const isFollowing = await prisma.follow.findFirst({
+          where: {
+            follower: currentUser.id_user,
+            account: receiverId,
+            active: true,
+            pending: false
+          }
+        });
+
+        if (!isFollowing) {
+          return res.status(403).json({ 
+            error: 'Cannot send message to private account unless following' 
+          });
+        }
+      }
 
       // Créer le message
       const newMessage = await prisma.messagePrive.create({
         data: {
-          sender: req.user.id_user,
-          receiver,
-          message,
-          send_at: now,
+          sender: currentUser.id_user,
+          receiver: receiverId,
+          message: message,
+          send_at: new Date(),
           active: true,
-          updated_at: now
+          updated_at: new Date()
         },
         include: {
           sender_user: {
@@ -113,6 +165,334 @@ class MessageController {
       });
     } catch (error) {
       logger.error('Send message error:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Obtenir la liste des conversations
+   */
+  static async getConversations(req, res) {
+    try {
+      const { error, value } = paginationSchema.validate(req.query);
+      if (error) {
+        return res.status(400).json({ error: error.details[0].message });
+      }
+
+      const { page, limit } = value;
+      const skip = (page - 1) * limit;
+
+      // Récupérer les derniers messages de chaque conversation
+      const latestMessages = await prisma.$queryRaw`
+        WITH ranked_messages AS (
+          SELECT 
+            m.*,
+            ROW_NUMBER() OVER (
+              PARTITION BY 
+                CASE 
+                  WHEN m.sender = ${req.user.id_user} THEN m.receiver 
+                  ELSE m.sender 
+                END
+              ORDER BY m.send_at DESC
+            ) as rn
+          FROM "cercle"."messages_prives" m
+          WHERE 
+            (m.sender = ${req.user.id_user} OR m.receiver = ${req.user.id_user})
+            AND m.active = true
+        )
+        SELECT * FROM ranked_messages WHERE rn = 1
+        ORDER BY send_at DESC
+        LIMIT ${limit} OFFSET ${skip}
+      `;
+
+      // Transformer les données pour le frontend
+      const conversations = await Promise.all(
+        latestMessages.map(async (message) => {
+          const otherUserId = message.sender === req.user.id_user 
+            ? message.receiver 
+            : message.sender;
+
+          // Récupérer les infos de l'autre utilisateur
+          const otherUser = await prisma.user.findFirst({
+            where: { 
+              id_user: otherUserId,
+              is_active: true 
+            },
+            select: {
+              id_user: true,
+              username: true,
+              photo_profil: true,
+              certified: true
+            }
+          });
+
+          if (!otherUser) return null;
+
+          // Compter les messages non lus de cet utilisateur
+          const unreadCount = await prisma.messagePrive.count({
+            where: {
+              sender: otherUserId,
+              receiver: req.user.id_user,
+              read_at: null,
+              active: true
+            }
+          });
+
+          return {
+            otherUser,
+            lastMessage: {
+              content: message.message,
+              senderId: message.sender,
+              timestamp: message.send_at,
+              isRead: message.read_at !== null
+            },
+            unreadCount
+          };
+        })
+      );
+
+      // Filtrer les conversations nulles (utilisateurs supprimés)
+      const validConversations = conversations.filter(conv => conv !== null);
+
+      res.json(validConversations);
+    } catch (error) {
+      logger.error('Get conversations error:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Obtenir les messages avec un utilisateur spécifique
+   */
+  static async getMessages(req, res) {
+    try {
+      const { error: paramsError } = userParamsSchema.validate(req.params);
+      if (paramsError) {
+        return res.status(400).json({ error: paramsError.details[0].message });
+      }
+
+      const { error: queryError, value } = paginationSchema.validate(req.query);
+      if (queryError) {
+        return res.status(400).json({ error: queryError.details[0].message });
+      }
+
+      const { id: userIdParam } = req.params;
+      const { page, limit } = value;
+      const skip = (page - 1) * limit;
+
+      // Convertir les IDs en entiers
+      let userId;
+      try {
+        userId = parseUserId(userIdParam);
+      } catch (error) {
+        return res.status(400).json({ error: 'Invalid user ID format' });
+      }
+
+      // Vérifier que l'autre utilisateur existe et est actif
+      const otherUser = await prisma.user.findFirst({
+        where: { 
+          id_user: userId,
+          is_active: true
+        },
+        select: { id_user: true, username: true }
+      });
+
+      if (!otherUser) {
+        return res.status(404).json({ error: 'User not found or inactive' });
+      }
+
+      const [messages, total] = await Promise.all([
+        prisma.messagePrive.findMany({
+          where: {
+            OR: [
+              { sender: req.user.id_user, receiver: userId },
+              { sender: userId, receiver: req.user.id_user }
+            ],
+            active: true
+          },
+          include: {
+            sender_user: {
+              select: {
+                id_user: true,
+                username: true,
+                photo_profil: true
+              }
+            }
+          },
+          skip,
+          take: limit,
+          orderBy: { send_at: 'desc' }
+        }),
+        prisma.messagePrive.count({
+          where: {
+            OR: [
+              { sender: req.user.id_user, receiver: userId },
+              { sender: userId, receiver: req.user.id_user }
+            ],
+            active: true
+          }
+        })
+      ]);
+
+      // Marquer les messages comme lus automatiquement
+      await prisma.messagePrive.updateMany({
+        where: {
+          sender: userId,
+          receiver: req.user.id_user,
+          read_at: null,
+          active: true
+        },
+        data: {
+          read_at: new Date()
+        }
+      });
+
+      const totalPages = Math.ceil(total / limit);
+
+      res.json({
+        messages: messages.reverse(), // Retourner en ordre chronologique
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages,
+          hasNext: page < totalPages,
+          hasPrev: page > 1
+        }
+      });
+    } catch (error) {
+      logger.error('Get messages error:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Marquer les messages comme lus
+   */
+  static async markAsRead(req, res) {
+    try {
+      const { error: paramsError } = userParamsSchema.validate(req.params);
+      if (paramsError) {
+        return res.status(400).json({ error: paramsError.details[0].message });
+      }
+
+      const { id: userIdParam } = req.params;
+
+      // Convertir l'ID en entier
+      let userId;
+      try {
+        userId = parseUserId(userIdParam);
+      } catch (error) {
+        return res.status(400).json({ error: 'Invalid user ID format' });
+      }
+
+      // Vérifier que l'autre utilisateur existe et est actif
+      const otherUser = await prisma.user.findFirst({
+        where: { 
+          id_user: userId,
+          is_active: true
+        },
+        select: { id_user: true }
+      });
+
+      if (!otherUser) {
+        return res.status(404).json({ error: 'User not found or inactive' });
+      }
+
+      const updatedCount = await prisma.messagePrive.updateMany({
+        where: {
+          sender: userId,
+          receiver: req.user.id_user,
+          read_at: null,
+          active: true
+        },
+        data: {
+          read_at: new Date()
+        }
+      });
+
+      res.json({ 
+        message: 'Messages marked as read',
+        count: updatedCount.count 
+      });
+    } catch (error) {
+      logger.error('Mark as read error:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Obtenir le nombre de messages non lus
+   */
+  static async getUnreadCount(req, res) {
+    try {
+      const unreadCount = await prisma.messagePrive.count({
+        where: {
+          receiver: req.user.id_user,
+          read_at: null,
+          active: true,
+          sender_user: {
+            is_active: true
+          }
+        }
+      });
+
+      res.json({ unreadCount });
+    } catch (error) {
+      logger.error('Get unread count error:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Supprimer un message
+   */
+  static async deleteMessage(req, res) {
+    try {
+      const { error: paramsError } = messageParamsSchema.validate(req.params);
+      if (paramsError) {
+        return res.status(400).json({ error: paramsError.details[0].message });
+      }
+
+      const { messageId: messageIdParam } = req.params;
+
+      // Convertir l'ID en entier
+      let messageId;
+      try {
+        messageId = parseMessageId(messageIdParam);
+      } catch (error) {
+        return res.status(400).json({ error: 'Invalid message ID format' });
+      }
+
+      // Vérifier que le message existe et appartient à l'utilisateur
+      const message = await prisma.messagePrive.findFirst({
+        where: {
+          id_message: messageId,
+          sender: req.user.id_user, // Seul l'expéditeur peut supprimer
+          active: true
+        }
+      });
+
+      if (!message) {
+        return res.status(404).json({ 
+          error: 'Message not found or you do not have permission to delete it' 
+        });
+      }
+
+      // Soft delete (marquer comme inactif)
+      await prisma.messagePrive.update({
+        where: { id_message: messageId },
+        data: { 
+          active: false,
+          updated_at: new Date()
+        }
+      });
+
+      logger.info(`Message deleted by ${req.user.username}: ${messageId}`);
+
+      res.json({ message: 'Message deleted successfully' });
+    } catch (error) {
+      logger.error('Delete message error:', error);
       res.status(500).json({ error: 'Internal server error' });
     }
   }
@@ -197,414 +577,6 @@ class MessageController {
       });
     } catch (error) {
       logger.error('Get available contacts error:', error);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  }
-
-  /**
-   * Obtenir la liste des conversations
-   */
-  static async getConversations(req, res) {
-    try {
-      const { error, value } = paginationSchema.validate(req.query);
-      if (error) {
-        return res.status(400).json({ error: error.details[0].message });
-      }
-
-      const { page, limit } = value;
-      const skip = (page - 1) * limit;
-
-      // Récupérer les derniers messages de chaque conversation
-      const latestMessages = await prisma.$queryRaw`
-        WITH ranked_messages AS (
-          SELECT 
-            m.*,
-            ROW_NUMBER() OVER (
-              PARTITION BY 
-                CASE 
-                  WHEN sender = ${req.user.id_user} THEN receiver
-                  ELSE sender
-                END
-              ORDER BY send_at DESC
-            ) as rn
-          FROM cercle.messages_prives m
-          WHERE (sender = ${req.user.id_user} OR receiver = ${req.user.id_user})
-            AND active = true
-        )
-        SELECT * FROM ranked_messages WHERE rn = 1
-        ORDER BY send_at DESC
-        LIMIT ${limit} OFFSET ${skip}
-      `;
-
-      // Enrichir avec les informations des utilisateurs et compter les non lus
-      const conversations = await Promise.all(
-        latestMessages.map(async (msg) => {
-          const otherUserId = msg.sender === req.user.id_user ? msg.receiver : msg.sender;
-          
-          // Récupérer les infos de l'autre utilisateur (seulement si actif)
-          const otherUser = await prisma.user.findFirst({
-            where: {
-              id_user: otherUserId,
-              is_active: true
-            },
-            select: {
-              id_user: true,
-              username: true,
-              photo_profil: true,
-              certified: true
-            }
-          });
-
-          // Si l'autre utilisateur n'est plus actif, ignorer cette conversation
-          if (!otherUser) {
-            return null;
-          }
-
-          // Compter les messages non lus de cette conversation
-          const unreadCount = await prisma.messagePrive.count({
-            where: {
-              sender: otherUserId,
-              receiver: req.user.id_user,
-              read_at: null,
-              active: true
-            }
-          });
-
-          return {
-            otherUser,
-            lastMessage: {
-              id_message: msg.id_message,
-              content: msg.message,
-              senderId: msg.sender,
-              timestamp: msg.send_at,
-              isRead: msg.read_at !== null
-            },
-            unreadCount
-          };
-        })
-      );
-
-      // Filtrer les conversations null (utilisateurs inactifs)
-      const activeConversations = conversations.filter(conv => conv !== null);
-
-      res.json(activeConversations);
-    } catch (error) {
-      logger.error('Get conversations error:', error);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  }
-
-  /**
-   * Obtenir les messages d'une conversation entre 2 utilisateurs
-   */
-  static async getMessages(req, res) {
-    try {
-      const { error: paramsError } = userParamsSchema.validate(req.params);
-      if (paramsError) {
-        return res.status(400).json({ error: paramsError.details[0].message });
-      }
-
-      const { error: queryError, value } = paginationSchema.validate(req.query);
-      if (queryError) {
-        return res.status(400).json({ error: queryError.details[0].message });
-      }
-
-      const { id: userId } = req.params;
-      const { page, limit } = value;
-      const skip = (page - 1) * limit;
-
-      // Vérifier que l'autre utilisateur existe et est actif
-      const otherUser = await prisma.user.findFirst({
-        where: { 
-          id_user: userId,
-          is_active: true
-        },
-        select: { id_user: true, username: true }
-      });
-
-      if (!otherUser) {
-        return res.status(404).json({ error: 'User not found or inactive' });
-      }
-
-      const [messages, total] = await Promise.all([
-        prisma.messagePrive.findMany({
-          where: {
-            OR: [
-              { sender: req.user.id_user, receiver: userId },
-              { sender: userId, receiver: req.user.id_user }
-            ],
-            active: true
-          },
-          include: {
-            sender_user: {
-              select: {
-                id_user: true,
-                username: true,
-                photo_profil: true
-              }
-            }
-          },
-          skip,
-          take: limit,
-          orderBy: { send_at: 'desc' }
-        }),
-        prisma.messagePrive.count({
-          where: {
-            OR: [
-              { sender: req.user.id_user, receiver: userId },
-              { sender: userId, receiver: req.user.id_user }
-            ],
-            active: true
-          }
-        })
-      ]);
-
-      // Marquer les messages comme lus automatiquement
-      await prisma.messagePrive.updateMany({
-        where: {
-          sender: userId,
-          receiver: req.user.id_user,
-          read_at: null,
-          active: true
-        },
-        data: {
-          read_at: new Date()
-        }
-      });
-
-      const totalPages = Math.ceil(total / limit);
-
-      res.json({
-        messages: messages.reverse(), // Retourner en ordre chronologique
-        pagination: {
-          page,
-          limit,
-          total,
-          totalPages,
-          hasNext: page < totalPages,
-          hasPrev: page > 1
-        }
-      });
-    } catch (error) {
-      logger.error('Get messages error:', error);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  }
-
-  /**
-   * Modifier un message
-   */
-  static async updateMessage(req, res) {
-    try {
-      const { error: paramsError } = messageParamsSchema.validate(req.params);
-      if (paramsError) {
-        return res.status(400).json({ error: paramsError.details[0].message });
-      }
-
-      const { error, value } = updateMessageSchema.validate(req.body);
-      if (error) {
-        return res.status(400).json({ error: error.details[0].message });
-      }
-
-      const { messageId } = req.params;
-      const { message } = value;
-
-      // Vérifier que le message existe et est actif
-      const existingMessage = await prisma.messagePrive.findFirst({
-        where: { 
-          id_message: messageId,
-          active: true
-        },
-        select: { 
-          id_message: true, 
-          sender: true, 
-          send_at: true,
-          read_at: true
-        }
-      });
-
-      if (!existingMessage) {
-        return res.status(404).json({ error: 'Message not found' });
-      }
-
-      // Vérifier que l'utilisateur connecté est l'expéditeur
-      if (existingMessage.sender !== req.user.id_user) {
-        return res.status(403).json({ error: 'Access denied' });
-      }
-
-      // Vérifier la limite de temps (15 minutes)
-      const timeDiff = new Date() - new Date(existingMessage.send_at);
-      const fifteenMinutes = 15 * 60 * 1000;
-      
-      if (timeDiff > fifteenMinutes) {
-        return res.status(400).json({ 
-          error: 'Message modification time limit exceeded',
-          message: 'Messages can only be modified within 15 minutes of sending'
-        });
-      }
-
-      // Vérifier si le message a été lu (optionnel - à vous de décider)
-      if (existingMessage.read_at) {
-        return res.status(400).json({ 
-          error: 'Cannot modify read message',
-          message: 'This message has already been read by the recipient'
-        });
-      }
-
-      // Mettre à jour le message
-      const updatedMessage = await prisma.messagePrive.update({
-        where: { id_message: messageId },
-        data: { 
-          message,
-          updated_at: new Date()
-        },
-        include: {
-          sender_user: {
-            select: {
-              id_user: true,
-              username: true,
-              photo_profil: true
-            }
-          },
-          receiver_user: {
-            select: {
-              id_user: true,
-              username: true,
-              photo_profil: true
-            }
-          }
-        }
-      });
-
-      logger.info(`Message updated by ${req.user.username}: ${messageId}`);
-
-      res.json({
-        message: 'Message updated successfully',
-        data: updatedMessage
-      });
-    } catch (error) {
-      logger.error('Update message error:', error);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  }
-
-  /**
-   * Supprimer un message (soft delete)
-   */
-  static async deleteMessage(req, res) {
-    try {
-      const { error: paramsError } = messageParamsSchema.validate(req.params);
-      if (paramsError) {
-        return res.status(400).json({ error: paramsError.details[0].message });
-      }
-
-      const { messageId } = req.params;
-
-      // Vérifier que le message existe et est actif
-      const message = await prisma.messagePrive.findFirst({
-        where: { 
-          id_message: messageId,
-          active: true
-        },
-        select: { 
-          id_message: true, 
-          sender: true
-        }
-      });
-
-      if (!message) {
-        return res.status(404).json({ error: 'Message not found' });
-      }
-
-      // Vérifier que l'utilisateur connecté est l'expéditeur
-      if (message.sender !== req.user.id_user) {
-        return res.status(403).json({ error: 'Access denied' });
-      }
-
-      // Soft delete
-      await prisma.messagePrive.update({
-        where: { id_message: messageId },
-        data: { 
-          active: false,
-          updated_at: new Date()
-        }
-      });
-
-      logger.info(`Message deleted by ${req.user.username}: ${messageId}`);
-
-      res.json({ message: 'Message deleted successfully' });
-    } catch (error) {
-      logger.error('Delete message error:', error);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  }
-
-  /**
-   * Marquer les messages comme lus
-   */
-  static async markAsRead(req, res) {
-    try {
-      const { error: paramsError } = userParamsSchema.validate(req.params);
-      if (paramsError) {
-        return res.status(400).json({ error: paramsError.details[0].message });
-      }
-
-      const { id: userId } = req.params;
-
-      // Vérifier que l'autre utilisateur existe et est actif
-      const otherUser = await prisma.user.findFirst({
-        where: { 
-          id_user: userId,
-          is_active: true
-        },
-        select: { id_user: true }
-      });
-
-      if (!otherUser) {
-        return res.status(404).json({ error: 'User not found or inactive' });
-      }
-
-      const updatedCount = await prisma.messagePrive.updateMany({
-        where: {
-          sender: userId,
-          receiver: req.user.id_user,
-          read_at: null,
-          active: true
-        },
-        data: {
-          read_at: new Date()
-        }
-      });
-
-      res.json({ 
-        message: 'Messages marked as read',
-        count: updatedCount.count 
-      });
-    } catch (error) {
-      logger.error('Mark as read error:', error);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  }
-
-  /**
-   * Obtenir le nombre de messages non lus
-   */
-  static async getUnreadCount(req, res) {
-    try {
-      const unreadCount = await prisma.messagePrive.count({
-        where: {
-          receiver: req.user.id_user,
-          read_at: null,
-          active: true,
-          sender_user: {
-            is_active: true
-          }
-        }
-      });
-
-      res.json({ unreadCount });
-    } catch (error) {
-      logger.error('Get unread count error:', error);
       res.status(500).json({ error: 'Internal server error' });
     }
   }
