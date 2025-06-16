@@ -1,24 +1,21 @@
 // src/middleware/auth.js
 const jwt = require('jsonwebtoken');
-const { PrismaClient } = require('@prisma/client');
+const prisma = require('../utils/database');
 const logger = require('../utils/logger');
-
-const prisma = new PrismaClient();
 
 /**
  * ✅ CORRECTION: Middleware d'authentification requis
- * Vérifie que l'utilisateur est connecté et actif
+ * Vérifie le token JWT et ajoute l'utilisateur à la requête
  */
 const authenticateToken = async (req, res, next) => {
   try {
-    // Récupérer le token depuis le header Authorization
     const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+    const token = authHeader && authHeader.split(' ')[1];
 
     if (!token) {
       return res.status(401).json({ 
         error: 'Access denied',
-        message: 'No token provided'
+        message: 'No token provided' 
       });
     }
 
@@ -47,11 +44,10 @@ const authenticateToken = async (req, res, next) => {
     if (!user) {
       return res.status(401).json({ 
         error: 'Access denied',
-        message: 'User not found or inactive'
+        message: 'Invalid or expired token' 
       });
     }
 
-    // Ajouter l'utilisateur à la requête
     req.user = user;
     next();
 
@@ -130,19 +126,19 @@ const optionalAuth = async (req, res, next) => {
 const checkPostPermissions = async (req, res, next) => {
   try {
     const { id: postId } = req.params;
-    
-    if (!postId) {
-      return res.status(400).json({ error: 'Post ID is required' });
+    const userId = req.user?.id_user;
+
+    if (!userId) {
+      return res.status(401).json({
+        error: 'Authentication required',
+        message: 'Vous devez être connecté pour accéder à ce contenu'
+      });
     }
 
-    // Récupérer le post avec l'auteur
-    const post = await prisma.post.findFirst({
-      where: { 
-        id_post: parseInt(postId),
-        active: true
-      },
+    const post = await prisma.post.findUnique({
+      where: { id_post: parseInt(postId) },
       include: {
-        author: {
+        user: {
           select: {
             id_user: true,
             private: true,
@@ -152,29 +148,29 @@ const checkPostPermissions = async (req, res, next) => {
       }
     });
 
-    if (!post || !post.author.is_active) {
-      return res.status(404).json({ error: 'Post not found or author inactive' });
+    if (!post || !post.active) {
+      return res.status(404).json({
+        error: 'Post not found',
+        message: 'Ce post n\'existe pas ou a été supprimé'
+      });
     }
 
-    // Si le post est d'un compte privé et que ce n'est pas le propriétaire
-    if (post.author.private && (!req.user || post.author.id_user !== req.user.id_user)) {
-      // Vérifier si l'utilisateur suit le compte privé
-      if (req.user) {
-        const isFollowing = await prisma.follow.findUnique({
-          where: {
-            follower_account: {
-              follower: req.user.id_user,
-              account: post.author.id_user
-            }
-          },
-          select: { active: true, pending: true }
-        });
-
-        if (!isFollowing || !isFollowing.active || isFollowing.pending) {
-          return res.status(403).json({ error: 'Access denied to private post' });
+    // Vérifier si l'utilisateur peut voir ce post
+    if (post.user.private && post.user.id_user !== userId) {
+      // Vérifier si l'utilisateur suit l'auteur du post
+      const isFollowing = await prisma.follow.findFirst({
+        where: {
+          id_follower: userId,
+          id_followed: post.user.id_user,
+          is_active: true
         }
-      } else {
-        return res.status(403).json({ error: 'Access denied to private post' });
+      });
+
+      if (!isFollowing) {
+        return res.status(403).json({
+          error: 'Access denied',
+          message: 'Ce contenu est privé'
+        });
       }
     }
 
@@ -183,123 +179,133 @@ const checkPostPermissions = async (req, res, next) => {
 
   } catch (error) {
     logger.error('Post permissions check error:', error);
-    return res.status(500).json({ error: 'Internal server error' });
-  }
-};
-
-/**
- * ✅ NOUVEAU: Middleware pour vérifier la propriété d'un post
- */
-const checkPostOwnership = async (req, res, next) => {
-  try {
-    const { id: postId } = req.params;
-    
-    if (!postId) {
-      return res.status(400).json({ error: 'Post ID is required' });
-    }
-
-    // Récupérer le post
-    const post = await prisma.post.findFirst({
-      where: { 
-        id_post: parseInt(postId),
-        active: true,
-        id_user: req.user.id_user // L'utilisateur doit être le propriétaire
-      }
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: 'Erreur lors de la vérification des permissions'
     });
-
-    if (!post) {
-      return res.status(404).json({ 
-        error: 'Post not found or access denied',
-        message: 'You can only modify your own posts'
-      });
-    }
-
-    req.post = post;
-    next();
-
-  } catch (error) {
-    logger.error('Post ownership check error:', error);
-    return res.status(500).json({ error: 'Internal server error' });
   }
 };
 
 /**
- * ✅ NOUVEAU: Middleware pour limiter les actions par utilisateur
+ * ✅ NOUVEAU: Middleware pour vérifier les permissions sur un profil
  */
-const rateLimitPerUser = (maxRequests = 10, windowMs = 60000) => {
-  const userRequests = new Map();
-
-  return (req, res, next) => {
-    if (!req.user) {
-      return next();
-    }
-
-    const userId = req.user.id_user;
-    const now = Date.now();
-    
-    if (!userRequests.has(userId)) {
-      userRequests.set(userId, []);
-    }
-
-    const userRequestTimes = userRequests.get(userId);
-    
-    // Nettoyer les anciennes requêtes
-    while (userRequestTimes.length > 0 && now - userRequestTimes[0] > windowMs) {
-      userRequestTimes.shift();
-    }
-
-    if (userRequestTimes.length >= maxRequests) {
-      return res.status(429).json({
-        error: 'Rate limit exceeded',
-        message: `Too many requests. Limit: ${maxRequests} per ${windowMs/1000} seconds`
-      });
-    }
-
-    userRequestTimes.push(now);
-    next();
-  };
-};
-
-/**
- * ✅ NOUVEAU: Middleware pour vérifier le rôle admin
- */
-const requireAdmin = async (req, res, next) => {
+const checkProfilePermissions = async (req, res, next) => {
   try {
-    if (!req.user) {
-      return res.status(401).json({ error: 'Authentication required' });
-    }
+    const { id: profileId } = req.params;
+    const userId = req.user?.id_user;
+    const profileIdInt = parseInt(profileId);
 
-    // Vérifier le rôle de l'utilisateur
-    const userWithRole = await prisma.user.findFirst({
-      where: { 
-        id_user: req.user.id_user,
+    const profile = await prisma.user.findUnique({
+      where: { id_user: profileIdInt },
+      select: {
+        id_user: true,
+        username: true,
+        private: true,
         is_active: true
-      },
-      include: {
-        role: true
       }
     });
 
-    if (!userWithRole || userWithRole.role.role !== 'administrator') {
-      return res.status(403).json({ 
-        error: 'Access denied',
-        message: 'Administrator privileges required'
+    if (!profile || !profile.is_active) {
+      return res.status(404).json({
+        error: 'User not found',
+        message: 'Cet utilisateur n\'existe pas'
       });
     }
 
+    // Si le profil est privé et que ce n'est pas le propriétaire
+    if (profile.private && profileIdInt !== userId) {
+      // Vérifier si l'utilisateur connecté suit ce profil
+      if (userId) {
+        const isFollowing = await prisma.follow.findFirst({
+          where: {
+            id_follower: userId,
+            id_followed: profileIdInt,
+            is_active: true
+          }
+        });
+
+        if (!isFollowing) {
+          return res.status(403).json({
+            error: 'Private profile',
+            message: 'Ce profil est privé'
+          });
+        }
+      } else {
+        return res.status(403).json({
+          error: 'Private profile',
+          message: 'Ce profil est privé'
+        });
+      }
+    }
+
+    req.profile = profile;
     next();
 
   } catch (error) {
-    logger.error('Admin check error:', error);
-    return res.status(500).json({ error: 'Internal server error' });
+    logger.error('Profile permissions check error:', error);
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: 'Erreur lors de la vérification des permissions'
+    });
   }
+};
+
+/**
+ * ✅ NOUVEAU: Middleware pour vérifier si l'utilisateur est le propriétaire
+ */
+const requireOwnership = (resourceType = 'resource') => {
+  return async (req, res, next) => {
+    try {
+      const userId = req.user?.id_user;
+      let resourceOwnerId;
+
+      switch (resourceType) {
+        case 'post':
+          resourceOwnerId = req.post?.id_user;
+          break;
+        case 'profile':
+          resourceOwnerId = req.profile?.id_user;
+          break;
+        case 'user':
+          resourceOwnerId = parseInt(req.params.id);
+          break;
+        default:
+          return res.status(400).json({
+            error: 'Invalid resource type',
+            message: 'Type de ressource invalide'
+          });
+      }
+
+      if (!userId) {
+        return res.status(401).json({
+          error: 'Authentication required',
+          message: 'Vous devez être connecté'
+        });
+      }
+
+      if (userId !== resourceOwnerId) {
+        return res.status(403).json({
+          error: 'Access denied',
+          message: 'Vous n\'avez pas les permissions nécessaires'
+        });
+      }
+
+      next();
+
+    } catch (error) {
+      logger.error('Ownership check error:', error);
+      return res.status(500).json({
+        error: 'Internal server error',
+        message: 'Erreur lors de la vérification des permissions'
+      });
+    }
+  };
 };
 
 module.exports = {
   authenticateToken,
   optionalAuth,
   checkPostPermissions,
-  checkPostOwnership,
-  rateLimitPerUser,
-  requireAdmin
+  checkProfilePermissions,
+  requireOwnership
 };
