@@ -12,10 +12,27 @@ const createPostSchema = Joi.object({
       'any.required': 'Post content is required'
     }),
     
-  id_message_type: Joi.string()
+  id_message_type: Joi.alternatives()
+    .try(
+      Joi.string().pattern(/^\d+$/),
+      Joi.number().integer().positive()
+    )
     .optional()
     .messages({
-      'string.base': 'Message type ID must be a string'
+      'alternatives.match': 'Message type ID must be a valid number',
+      'number.positive': 'Message type ID must be positive'
+    }),
+
+  // ✅ AJOUT: Support pour post_parent (réponses)
+  post_parent: Joi.alternatives()
+    .try(
+      Joi.string().pattern(/^\d+$/),
+      Joi.number().integer().positive()
+    )
+    .optional()
+    .messages({
+      'alternatives.match': 'Parent post ID must be a valid number',
+      'number.positive': 'Parent post ID must be positive'
     })
 });
 
@@ -59,21 +76,31 @@ const getPostsSchema = Joi.object({
 
 // Schéma de validation pour les paramètres de post
 const postParamsSchema = Joi.object({
-  id: Joi.string()
+  id: Joi.alternatives()
+    .try(
+      Joi.string().pattern(/^\d+$/),
+      Joi.number().integer().positive()
+    )
     .required()
     .messages({
       'any.required': 'Post ID is required',
-      'string.base': 'Post ID must be a string'
+      'alternatives.match': 'Post ID must be a valid number',
+      'number.positive': 'Post ID must be positive'
     })
 });
 
 // Schéma de validation pour les paramètres d'utilisateur dans les posts
 const userPostsParamsSchema = Joi.object({
-  userId: Joi.string()
+  userId: Joi.alternatives()
+    .try(
+      Joi.string().pattern(/^\d+$/),
+      Joi.number().integer().positive()
+    )
     .required()
     .messages({
       'any.required': 'User ID is required',
-      'string.base': 'User ID must be a string'
+      'alternatives.match': 'User ID must be a valid number',
+      'number.positive': 'User ID must be positive'
     })
 });
 
