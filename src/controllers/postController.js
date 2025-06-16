@@ -326,6 +326,7 @@ class PostController {
         prisma.post.findMany({
           where: {
             active: true,
+            post_parent: null,
             user: { // ✅ CORRECTION: "user" au lieu de "author"
               private: false,
               is_active: true
@@ -361,6 +362,7 @@ class PostController {
         prisma.post.count({
           where: {
             active: true,
+            post_parent: null,
             user: {
               private: false,
               is_active: true
@@ -416,6 +418,7 @@ class PostController {
       const posts = await prisma.post.findMany({
         where: {
           active: true,
+          post_parent: null,
           user: {
             private: false,
             is_active: true
@@ -496,6 +499,7 @@ class PostController {
 
       const whereClause = {
         active: true,
+        post_parent: null,
         user: {
           private: false,
           is_active: true
@@ -618,6 +622,7 @@ class PostController {
         prisma.post.findMany({
           where: {
             active: true,
+            post_parent: null,
             id_user: { in: followedUserIds },
             user: {
               is_active: true
@@ -657,6 +662,7 @@ class PostController {
         prisma.post.count({
           where: {
             active: true,
+            post_parent: null,
             id_user: { in: followedUserIds },
             user: {
               is_active: true
@@ -763,6 +769,7 @@ class PostController {
         prisma.post.findMany({
           where: {
             id_user: parseInt(userId),
+            post_parent: null,
             active: true
           },
           include: {
