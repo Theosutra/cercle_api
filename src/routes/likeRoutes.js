@@ -1,4 +1,4 @@
-// src/routes/likeRoutes.js
+// src/routes/likeRoutes.js - CORRECTION COMPLÈTE
 const express = require('express');
 const { authenticateToken, optionalAuth } = require('../middleware/auth');
 const db = require('../utils/database');
@@ -79,9 +79,12 @@ router.post('/posts/:id', authenticateToken, async (req, res) => {
         }
       });
 
-      // Compter les likes restants
+      // Compter les likes restants (seulement les actifs)
       const likeCount = await db.like.count({
-        where: { id_post: postIdInt }
+        where: { 
+          id_post: postIdInt,
+          active: true
+        }
       });
 
       console.log('✅ Post unliked successfully');
@@ -94,17 +97,26 @@ router.post('/posts/:id', authenticateToken, async (req, res) => {
       });
 
     } else {
-      // Like - créer un nouveau like
+      // ✅ CORRECTION: Like - créer un nouveau like avec TOUS les champs obligatoires
+      const now = new Date();
+      
       await db.like.create({
         data: {
           id_post: postIdInt,
-          id_user: userIdInt
+          id_user: userIdInt,
+          active: true,        // ✅ AJOUTÉ: champ obligatoire
+          notif_view: false,   // ✅ AJOUTÉ: champ obligatoire
+          created_at: now,     // ✅ AJOUTÉ: champ obligatoire
+          updated_at: now      // ✅ AJOUTÉ: champ obligatoire
         }
       });
 
-      // Compter les likes
+      // Compter les likes (seulement les actifs)
       const likeCount = await db.like.count({
-        where: { id_post: postIdInt }
+        where: { 
+          id_post: postIdInt,
+          active: true
+        }
       });
 
       console.log('✅ Post liked successfully');
@@ -143,100 +155,62 @@ router.post('/posts/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// GET /api/v1/likes/users/:id/posts - Posts likés par un utilisateur
-router.get('/users/:id/posts', authenticateToken, async (req, res) => {
+// ✅ AUTRES ROUTES À AJOUTER SI NÉCESSAIRE
+
+// GET /api/v1/likes/posts/:id - Obtenir les likes d'un post
+router.get('/posts/:id', optionalAuth, async (req, res) => {
   try {
-    const { id: userId } = req.params;
-    const page = Math.max(1, parseInt(req.query.page) || 1);
-    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 20));
-    const offset = (page - 1) * limit;
+    const { id: postId } = req.params;
+    const postIdInt = parseInt(postId);
 
-    console.log('🔄 Fetching liked posts for user:', userId);
-
-    const userIdInt = parseInt(userId);
-
-    // Vérifier que l'utilisateur existe
-    const user = await db.user.findUnique({
-      where: { id_user: userIdInt },
-      select: { id_user: true, is_active: true }
-    });
-
-    if (!user || !user.is_active) {
-      return res.status(404).json({ error: 'Utilisateur non trouvé' });
+    if (!postId || isNaN(postIdInt)) {
+      return res.status(400).json({ error: 'ID de post invalide' });
     }
 
-    // Récupérer les posts likés avec leurs détails
-    const likedPosts = await db.like.findMany({
-      where: {
-        id_user: userIdInt,
-        post: { active: true }
-      },
-      include: {
-        post: {
-          include: {
-            user: {
-              select: {
-                id_user: true,
-                username: true,
-                nom: true,
-                prenom: true,
-                photo_profil: true
-              }
-            },
-            _count: {
-              select: {
-                likes: true,
-                replies: { where: { active: true } }
-              }
-            }
+    // Vérifier que le post existe
+    const post = await db.post.findUnique({
+      where: { id_post: postIdInt },
+      select: { id_post: true, active: true }
+    });
+
+    if (!post || !post.active) {
+      return res.status(404).json({ error: 'Post non trouvé' });
+    }
+
+    // Compter les likes actifs
+    const likeCount = await db.like.count({
+      where: { 
+        id_post: postIdInt,
+        active: true
+      }
+    });
+
+    // Vérifier si l'utilisateur connecté a liké ce post
+    let isLikedByCurrentUser = false;
+    if (req.user) {
+      const userLike = await db.like.findUnique({
+        where: {
+          id_user_id_post: {
+            id_user: req.user.id_user,
+            id_post: postIdInt
           }
-        }
-      },
-      orderBy: { created_at: 'desc' },
-      skip: offset,
-      take: limit
-    });
+        },
+        select: { active: true }
+      });
+      isLikedByCurrentUser = userLike?.active || false;
+    }
 
-    // Formater les résultats
-    const formattedPosts = likedPosts
-      .filter(like => like.post)
-      .map(like => ({
-        ...like.post,
-        likeCount: like.post._count?.likes || 0,
-        replyCount: like.post._count?.replies || 0,
-        isLiked: true,
-        isLikedByCurrentUser: req.user.id_user === userIdInt,
-        author: like.post.user,
-        likedAt: like.created_at
-      }));
-
-    // Compter le total pour la pagination
-    const total = await db.like.count({
-      where: {
-        id_user: userIdInt,
-        post: { active: true }
-      }
-    });
-
-    console.log('✅ Liked posts fetched successfully');
     res.json({
-      posts: formattedPosts,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-        hasNext: page * limit < total,
-        hasPrev: page > 1
-      }
+      likeCount,
+      isLikedByCurrentUser,
+      postId: postIdInt
     });
 
   } catch (error) {
-    console.error('❌ Error fetching liked posts:', error);
+    console.error('❌ Error getting likes:', error);
     res.status(500).json({ 
       error: 'Erreur serveur',
-      message: 'Impossible de récupérer les posts likés',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: 'Impossible de récupérer les likes'
     });
   }
 });

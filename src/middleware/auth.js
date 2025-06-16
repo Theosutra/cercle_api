@@ -1,10 +1,10 @@
-// src/middleware/auth.js
+// src/middleware/auth.js - CORRECTION FINALE
 const jwt = require('jsonwebtoken');
 const prisma = require('../utils/database');
 const logger = require('../utils/logger');
 
 /**
- * ✅ CORRECTION: Middleware d'authentification requis
+ * ✅ CORRECTION FINALE: Middleware d'authentification requis
  * Vérifie le token JWT et ajoute l'utilisateur à la requête
  */
 const authenticateToken = async (req, res, next) => {
@@ -22,7 +22,9 @@ const authenticateToken = async (req, res, next) => {
     // Vérifier et décoder le token
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
     
-    // Vérifier que l'utilisateur existe et est actif
+    console.log('🔍 Token decoded:', { id_user: decoded.id_user, username: decoded.username });
+    
+    // ✅ CORRECTION FINALE: Utiliser 'mail' au lieu d'email
     const user = await prisma.user.findFirst({
       where: { 
         id_user: decoded.id_user,
@@ -31,7 +33,7 @@ const authenticateToken = async (req, res, next) => {
       select: {
         id_user: true,
         username: true,
-        email: true,
+        mail: true,          // ✅ CORRECTION: email -> mail
         nom: true,
         prenom: true,
         photo_profil: true,
@@ -40,6 +42,8 @@ const authenticateToken = async (req, res, next) => {
         is_active: true
       }
     });
+
+    console.log('👤 User found from token:', user ? `${user.username} (ID: ${user.id_user})` : 'null');
 
     if (!user) {
       return res.status(401).json({ 
@@ -75,7 +79,7 @@ const authenticateToken = async (req, res, next) => {
 };
 
 /**
- * ✅ CORRECTION: Middleware d'authentification optionnel
+ * ✅ CORRECTION FINALE: Middleware d'authentification optionnel
  * Ajoute l'utilisateur à la requête s'il est connecté, sinon continue
  */
 const optionalAuth = async (req, res, next) => {
@@ -91,7 +95,7 @@ const optionalAuth = async (req, res, next) => {
     // Vérifier et décoder le token
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
     
-    // Vérifier que l'utilisateur existe et est actif
+    // ✅ CORRECTION FINALE: Utiliser 'mail' au lieu d'email
     const user = await prisma.user.findFirst({
       where: { 
         id_user: decoded.id_user,
@@ -100,7 +104,7 @@ const optionalAuth = async (req, res, next) => {
       select: {
         id_user: true,
         username: true,
-        email: true,
+        mail: true,          // ✅ CORRECTION: email -> mail
         nom: true,
         prenom: true,
         photo_profil: true,
@@ -121,7 +125,7 @@ const optionalAuth = async (req, res, next) => {
 };
 
 /**
- * ✅ NOUVEAU: Middleware pour vérifier les permissions sur un post
+ * ✅ Middleware pour vérifier les permissions sur un post
  */
 const checkPostPermissions = async (req, res, next) => {
   try {
@@ -160,9 +164,9 @@ const checkPostPermissions = async (req, res, next) => {
       // Vérifier si l'utilisateur suit l'auteur du post
       const isFollowing = await prisma.follow.findFirst({
         where: {
-          id_follower: userId,
-          id_followed: post.user.id_user,
-          is_active: true
+          follower: userId,
+          account: post.user.id_user,
+          active: true
         }
       });
 
@@ -187,7 +191,7 @@ const checkPostPermissions = async (req, res, next) => {
 };
 
 /**
- * ✅ NOUVEAU: Middleware pour vérifier les permissions sur un profil
+ * ✅ Middleware pour vérifier les permissions sur un profil
  */
 const checkProfilePermissions = async (req, res, next) => {
   try {
@@ -218,9 +222,9 @@ const checkProfilePermissions = async (req, res, next) => {
       if (userId) {
         const isFollowing = await prisma.follow.findFirst({
           where: {
-            id_follower: userId,
-            id_followed: profileIdInt,
-            is_active: true
+            follower: userId,
+            account: profileIdInt,
+            active: true
           }
         });
 
@@ -251,7 +255,7 @@ const checkProfilePermissions = async (req, res, next) => {
 };
 
 /**
- * ✅ NOUVEAU: Middleware pour vérifier si l'utilisateur est le propriétaire
+ * ✅ Middleware pour vérifier si l'utilisateur est le propriétaire
  */
 const requireOwnership = (resourceType = 'resource') => {
   return async (req, res, next) => {

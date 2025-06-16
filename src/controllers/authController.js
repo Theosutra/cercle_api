@@ -66,70 +66,58 @@ class AuthController {
 
       // Récupérer le rôle USER par défaut
       const userRole = await prisma.role.findFirst({
-        where: { role: 'user' }
+        where: { role: 'USER' }
       });
 
       if (!userRole) {
-        logger.error('Default USER role not found in database');
-        return res.status(500).json({ error: 'System configuration error' });
-      }
-
-      // Récupérer la langue française par défaut
-      const frLanguage = await prisma.langue.findFirst({
-        where: { langue: 'fr' }
-      });
-
-      if (!frLanguage) {
-        logger.error('French language not found in database');
-        return res.status(500).json({ error: 'System configuration error' });
-      }
-
-      // Récupérer le thème light par défaut
-      const lightTheme = await prisma.theme.findFirst({
-        where: { theme: 'light' }
-      });
-
-      if (!lightTheme) {
-        logger.error('Light theme not found in database');
-        return res.status(500).json({ error: 'System configuration error' });
+        return res.status(500).json({ 
+          error: 'System configuration error',
+          message: 'Default user role not found'
+        });
       }
 
       // Hasher le mot de passe
       const saltRounds = parseInt(process.env.BCRYPT_ROUNDS) || 12;
-      const password_hash = await bcrypt.hash(password, saltRounds);
+      const passwordHash = await bcrypt.hash(password, saltRounds);
 
-      const now = new Date();
-
-      // Créer l'utilisateur avec une transaction pour assurer la cohérence
+      // Créer l'utilisateur avec toutes les relations
       const result = await prisma.$transaction(async (tx) => {
+        const currentDate = new Date();
+
         // Créer l'utilisateur
         const user = await tx.user.create({
           data: {
             username,
             mail,
-            password_hash,
+            password_hash: passwordHash,
             nom,
             prenom,
             telephone: telephone || null,
-            bio: null,
+            bio: `Salut ! Je suis ${prenom}, ravi de rejoindre la communauté ! 👋`,
             photo_profil: null,
             id_role: userRole.id_role,
-            private: false, // Public par défaut
-            certified: false, // Non certifié par défaut
+            private: false,
+            certified: false,
             is_active: true,
-            created_at: now,
-            updated_at: now,
-            last_login: now
+            created_at: currentDate,
+            updated_at: currentDate,
+            last_login: null
+          },
+          include: {
+            role: true
           }
         });
 
-        // Créer les préférences utilisateur par défaut
+        // Créer les préférences par défaut
+        const defaultLangue = await tx.langue.findFirst({ where: { langue: 'Français' } });
+        const defaultTheme = await tx.theme.findFirst({ where: { theme: 'Clair' } });
+
         await tx.userPreferences.create({
           data: {
             id_user: user.id_user,
-            id_langue: frLanguage.id_langue,
-            email_notification: false, // False par défaut
-            id_theme: lightTheme.id_theme
+            id_langue: defaultLangue?.id_langue || 1,
+            email_notification: true,
+            id_theme: defaultTheme?.id_theme || 1
           }
         });
 
@@ -253,7 +241,7 @@ class AuthController {
   }
 
   /**
-   * Rafraîchissement du token d'accès
+   * ✅ CORRECTION: Rafraîchissement du token d'accès
    */
   static async refresh(req, res) {
     try {
@@ -267,9 +255,9 @@ class AuthController {
       // Vérifier le refresh token
       const decoded = TokenService.verifyRefreshToken(refreshToken);
       
-      // Vérifier que l'utilisateur existe toujours et est actif
+      // ✅ CORRECTION: Utiliser decoded.id_user au lieu de decoded.userId
       const user = await prisma.user.findUnique({
-        where: { id_user: decoded.userId },
+        where: { id_user: decoded.id_user }, // ✅ CORRECTION
         select: { id_user: true, is_active: true }
       });
 
@@ -277,8 +265,8 @@ class AuthController {
         return res.status(401).json({ error: 'User not found or inactive' });
       }
 
-      // Générer un nouveau token d'accès
-      const { accessToken: newAccessToken } = TokenService.generateTokens(decoded.userId);
+      // ✅ CORRECTION: Générer un nouveau token d'accès avec decoded.id_user
+      const { accessToken: newAccessToken } = TokenService.generateTokens(decoded.id_user);
 
       res.json({ 
         accessToken: newAccessToken,

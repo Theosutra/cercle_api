@@ -1,15 +1,17 @@
+// src/services/tokenService.js - CORRECTION
 const jwt = require('jsonwebtoken');
 
 class TokenService {
   /**
    * Génère les tokens d'accès et de rafraîchissement
-   * @param {string} userId - ID de l'utilisateur
+   * @param {number} userId - ID de l'utilisateur
    * @returns {Object} - Object contenant accessToken et refreshToken
    */
   static generateTokens(userId) {
+    // ✅ CORRECTION: Utiliser 'id_user' au lieu de 'userId' pour correspondre au middleware
     const accessToken = jwt.sign(
-      { userId },
-      process.env.JWT_SECRET,
+      { id_user: userId }, // ✅ CORRECTION: id_user au lieu de userId
+      process.env.JWT_SECRET || 'your-secret-key',
       { 
         expiresIn: process.env.JWT_EXPIRES_IN || '15m',
         issuer: 'social-network-api',
@@ -18,8 +20,8 @@ class TokenService {
     );
     
     const refreshToken = jwt.sign(
-      { userId },
-      process.env.JWT_REFRESH_SECRET,
+      { id_user: userId }, // ✅ CORRECTION: id_user au lieu de userId
+      process.env.JWT_REFRESH_SECRET || 'your-refresh-secret',
       { 
         expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
         issuer: 'social-network-api',
@@ -36,7 +38,7 @@ class TokenService {
    * @returns {Object} - Payload décodé du token
    */
   static verifyRefreshToken(token) {
-    return jwt.verify(token, process.env.JWT_REFRESH_SECRET, {
+    return jwt.verify(token, process.env.JWT_REFRESH_SECRET || 'your-refresh-secret', {
       issuer: 'social-network-api',
       audience: 'social-network-client'
     });
@@ -48,7 +50,7 @@ class TokenService {
    * @returns {Object} - Payload décodé du token
    */
   static verifyAccessToken(token) {
-    return jwt.verify(token, process.env.JWT_SECRET, {
+    return jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key', {
       issuer: 'social-network-api',
       audience: 'social-network-client'
     });
@@ -61,7 +63,8 @@ class TokenService {
    */
   static refreshAccessToken(refreshToken) {
     const decoded = this.verifyRefreshToken(refreshToken);
-    const { accessToken } = this.generateTokens(decoded.userId);
+    // ✅ CORRECTION: Utiliser id_user au lieu de userId
+    const { accessToken } = this.generateTokens(decoded.id_user);
     return accessToken;
   }
 
