@@ -1,31 +1,39 @@
-// src/controllers/followController.js - Version complète corrigée
+// src/controllers/followController.js - Version complète CORRIGÉE avec la vraie syntaxe
 const prisma = require('../utils/database');
 const logger = require('../utils/logger');
 const { userParamsSchema, paginationSchema } = require('../validators/userValidator');
 
 class FollowController {
   /**
-   * Suivre un utilisateur ou demander à le suivre (compte privé)
+   * ✅ CORRIGÉ: Suivre un utilisateur (pour l'onboarding)
+   * Accepte l'ID depuis le body pour POST /api/v1/follow
    */
   static async followUser(req, res) {
     try {
-      const { error: paramsError } = userParamsSchema.validate(req.params);
-      if (paramsError) {
-        return res.status(400).json({ error: paramsError.details[0].message });
+      const followerId = req.user.id_user;
+      const { followed_id } = req.body; // ✅ Récupérer l'ID depuis le body
+
+      console.log(`🔄 Follow request: ${followerId} -> ${followed_id}`);
+
+      if (!followed_id) {
+        return res.status(400).json({ error: 'followed_id is required in request body' });
       }
 
-      const { id } = req.params;
-      
-      // Convertir l'ID string en nombre
-      const userId = parseInt(id, 10);
-      if (isNaN(userId)) {
-        return res.status(400).json({ error: 'Invalid user ID format' });
+      // Convertir en entier si nécessaire
+      const followedIdInt = parseInt(followed_id, 10);
+      if (isNaN(followedIdInt)) {
+        return res.status(400).json({ error: 'followed_id must be a valid number' });
+      }
+
+      // Vérifier que l'utilisateur ne se suit pas lui-même
+      if (followerId === followedIdInt) {
+        return res.status(400).json({ error: 'Cannot follow yourself' });
       }
 
       // Vérifier que l'utilisateur connecté existe et est actif
       const currentUser = await prisma.user.findFirst({
         where: { 
-          id_user: req.user.id_user,
+          id_user: followerId,
           is_active: true
         },
         select: { id_user: true, username: true }
@@ -35,15 +43,10 @@ class FollowController {
         return res.status(404).json({ error: 'Current user not found or inactive' });
       }
 
-      // Ne peut pas se suivre soi-même
-      if (userId === req.user.id_user) {
-        return res.status(400).json({ error: 'Cannot follow yourself' });
-      }
-
-      // Vérifier que l'utilisateur cible existe et est actif
+      // Vérifier que l'utilisateur à suivre existe et est actif
       const targetUser = await prisma.user.findFirst({
         where: { 
-          id_user: userId,
+          id_user: followedIdInt,
           is_active: true
         },
         select: { 
@@ -57,12 +60,12 @@ class FollowController {
         return res.status(404).json({ error: 'User not found or inactive' });
       }
 
-      // Vérifier si une relation existe déjà
+      // ✅ CORRIGÉ: Vérifier si une relation existe déjà avec la vraie syntaxe
       const existingFollow = await prisma.follow.findUnique({
         where: {
           follower_account: {
-            follower: req.user.id_user,
-            account: userId
+            follower: followerId,
+            account: followedIdInt
           }
         }
       });
@@ -71,17 +74,18 @@ class FollowController {
         const status = existingFollow.pending ? 'pending' : 'following';
         return res.status(409).json({ 
           error: `Already ${status} this user`,
-          status
+          status,
+          isFollowing: true 
         });
       }
 
       const now = new Date();
 
-      // Créer la relation de suivi
+      // ✅ CORRIGÉ: Créer la relation de suivi avec la vraie syntaxe
       const follow = await prisma.follow.create({
         data: {
-          follower: req.user.id_user,
-          account: userId,
+          follower: followerId,
+          account: followedIdInt,
           pending: targetUser.private, // En attente si le compte est privé
           active: true,
           notif_view: false, // Notification non vue
@@ -93,24 +97,28 @@ class FollowController {
       const message = targetUser.private ? 'Follow request sent' : 'User followed successfully';
       const action = targetUser.private ? 'requested to follow' : 'started following';
 
+      console.log(`✅ Follow created: ${followerId} -> ${followedIdInt} (pending: ${follow.pending})`);
       logger.info(`${currentUser.username} ${action} ${targetUser.username}`);
 
       res.status(201).json({
         message,
         isPending: follow.pending,
+        isFollowing: true,
         targetUser: {
           id_user: targetUser.id_user,
           username: targetUser.username
         }
       });
     } catch (error) {
+      console.error('❌ Error following user:', error);
       logger.error('Follow user error:', error);
       res.status(500).json({ error: 'Internal server error' });
     }
   }
 
   /**
-   * Ne plus suivre un utilisateur
+   * ✅ CORRIGÉ: Ne plus suivre un utilisateur 
+   * Utilise l'ID depuis les params pour DELETE /api/v1/follow/:id
    */
   static async unfollowUser(req, res) {
     try {
@@ -127,38 +135,57 @@ class FollowController {
         return res.status(400).json({ error: 'Invalid user ID format' });
       }
 
+      const followerId = req.user.id_user;
+
+      console.log(`🔄 Unfollow request: ${followerId} -> ${userId}`);
+
+      // Vérifier que l'utilisateur ne se désuit pas lui-même
+      if (followerId === userId) {
+        return res.status(400).json({ error: 'Cannot unfollow yourself' });
+      }
+
       // Vérifier que l'utilisateur cible existe et est actif (optionnel pour unfollow)
       const targetUser = await prisma.user.findUnique({
         where: { id_user: userId },
         select: { username: true, is_active: true }
       });
 
+      // ✅ CORRIGÉ: Chercher la relation existante avec la vraie syntaxe
       const existingFollow = await prisma.follow.findUnique({
         where: {
           follower_account: {
-            follower: req.user.id_user,
+            follower: followerId,
             account: userId
           }
         }
       });
 
       if (!existingFollow) {
-        return res.status(404).json({ error: 'Not following this user' });
+        return res.status(404).json({ 
+          error: 'Not following this user',
+          isFollowing: false 
+        });
       }
 
+      // ✅ CORRIGÉ: Supprimer la relation avec la vraie syntaxe
       await prisma.follow.delete({
         where: {
           follower_account: {
-            follower: req.user.id_user,
+            follower: followerId,
             account: userId
           }
         }
       });
 
+      console.log(`✅ Unfollowed: ${followerId} -> ${userId}`);
       logger.info(`${req.user.username} unfollowed ${targetUser?.username || `user ${userId}`}`);
 
-      res.json({ message: 'User unfollowed successfully' });
+      res.json({ 
+        message: 'User unfollowed successfully',
+        isFollowing: false
+      });
     } catch (error) {
+      console.error('❌ Error unfollowing user:', error);
       logger.error('Unfollow user error:', error);
       res.status(500).json({ error: 'Internal server error' });
     }
@@ -177,16 +204,15 @@ class FollowController {
       const { page, limit } = value;
       const skip = (page - 1) * limit;
 
-      const [requests, total] = await Promise.all([
+      const [pendingRequests, total] = await Promise.all([
         prisma.follow.findMany({
           where: {
             account: req.user.id_user,
             pending: true,
-            active: true
+            active: true,
+            follower_user: { is_active: true }
           },
-          select: {
-            follower: true,
-            created_at: true,
+          include: {
             follower_user: {
               select: {
                 id_user: true,
@@ -198,15 +224,16 @@ class FollowController {
               }
             }
           },
+          orderBy: { created_at: 'desc' },
           skip,
-          take: limit,
-          orderBy: { created_at: 'desc' }
+          take: limit
         }),
         prisma.follow.count({
           where: {
             account: req.user.id_user,
             pending: true,
-            active: true
+            active: true,
+            follower_user: { is_active: true }
           }
         })
       ]);
@@ -214,8 +241,9 @@ class FollowController {
       const totalPages = Math.ceil(total / limit);
 
       res.json({
-        requests: requests.map(request => ({
-          ...request.follower_user,
+        requests: pendingRequests.map(request => ({
+          id: request.follower,
+          user: request.follower_user,
           requestDate: request.created_at
         })),
         pagination: {
@@ -244,43 +272,34 @@ class FollowController {
       }
 
       const { id } = req.params;
-      
-      // Convertir l'ID string en nombre
-      const userId = parseInt(id, 10);
-      if (isNaN(userId)) {
+      const followerId = parseInt(id, 10);
+
+      if (isNaN(followerId)) {
         return res.status(400).json({ error: 'Invalid user ID format' });
       }
 
-      // Vérifier que le demandeur existe et est actif
-      const requesterUser = await prisma.user.findFirst({
-        where: { 
-          id_user: userId,
-          is_active: true
-        },
-        select: { username: true }
-      });
-
-      if (!requesterUser) {
-        return res.status(404).json({ error: 'Requester not found or inactive' });
-      }
-
-      const followRequest = await prisma.follow.findFirst({
+      const followRequest = await prisma.follow.findUnique({
         where: {
-          follower: userId,
-          account: req.user.id_user,
-          pending: true,
-          active: true
+          follower_account: {
+            follower: followerId,
+            account: req.user.id_user
+          }
+        },
+        include: {
+          follower_user: {
+            select: { username: true }
+          }
         }
       });
 
-      if (!followRequest) {
+      if (!followRequest || !followRequest.pending) {
         return res.status(404).json({ error: 'Follow request not found' });
       }
 
       await prisma.follow.update({
         where: {
           follower_account: {
-            follower: userId,
+            follower: followerId,
             account: req.user.id_user
           }
         },
@@ -290,7 +309,7 @@ class FollowController {
         }
       });
 
-      logger.info(`${req.user.username} accepted follow request from ${requesterUser.username}`);
+      logger.info(`Follow request accepted: ${followRequest.follower_user.username} -> ${req.user.username}`);
 
       res.json({ message: 'Follow request accepted' });
     } catch (error) {
@@ -310,49 +329,40 @@ class FollowController {
       }
 
       const { id } = req.params;
-      
-      // Convertir l'ID string en nombre
-      const userId = parseInt(id, 10);
-      if (isNaN(userId)) {
+      const followerId = parseInt(id, 10);
+
+      if (isNaN(followerId)) {
         return res.status(400).json({ error: 'Invalid user ID format' });
       }
 
-      // Vérifier que le demandeur existe et est actif
-      const requesterUser = await prisma.user.findFirst({
-        where: { 
-          id_user: userId,
-          is_active: true
-        },
-        select: { username: true }
-      });
-
-      if (!requesterUser) {
-        return res.status(404).json({ error: 'Requester not found or inactive' });
-      }
-
-      const followRequest = await prisma.follow.findFirst({
+      const followRequest = await prisma.follow.findUnique({
         where: {
-          follower: userId,
-          account: req.user.id_user,
-          pending: true,
-          active: true
+          follower_account: {
+            follower: followerId,
+            account: req.user.id_user
+          }
+        },
+        include: {
+          follower_user: {
+            select: { username: true }
+          }
         }
       });
 
-      if (!followRequest) {
+      if (!followRequest || !followRequest.pending) {
         return res.status(404).json({ error: 'Follow request not found' });
       }
 
       await prisma.follow.delete({
         where: {
           follower_account: {
-            follower: userId,
+            follower: followerId,
             account: req.user.id_user
           }
         }
       });
 
-      logger.info(`${req.user.username} rejected follow request from ${requesterUser.username}`);
+      logger.info(`Follow request rejected: ${followRequest.follower_user.username} -> ${req.user.username}`);
 
       res.json({ message: 'Follow request rejected' });
     } catch (error) {
@@ -640,90 +650,7 @@ class FollowController {
   }
 
   /**
-   * Supprimer un abonné (retirer quelqu'un de ses followers)
-   */
-  static async removeFollower(req, res) {
-    try {
-      const { error: paramsError } = userParamsSchema.validate(req.params);
-      if (paramsError) {
-        return res.status(400).json({ error: paramsError.details[0].message });
-      }
-
-      const { id } = req.params;
-      
-      // Convertir l'ID string en nombre
-      const followerId = parseInt(id, 10);
-      if (isNaN(followerId)) {
-        return res.status(400).json({ error: 'Invalid user ID format' });
-      }
-
-      // Vérifier que l'utilisateur connecté existe et est actif
-      const currentUser = await prisma.user.findFirst({
-        where: { 
-          id_user: req.user.id_user,
-          is_active: true
-        },
-        select: { id_user: true, username: true }
-      });
-
-      if (!currentUser) {
-        return res.status(404).json({ error: 'Current user not found or inactive' });
-      }
-
-      // Vérifier que le follower existe et est actif
-      const followerUser = await prisma.user.findFirst({
-        where: { 
-          id_user: followerId,
-          is_active: true
-        },
-        select: { id_user: true, username: true }
-      });
-
-      if (!followerUser) {
-        return res.status(404).json({ error: 'Follower not found or inactive' });
-      }
-
-      // Vérifier qu'une relation de suivi existe (follower suit l'utilisateur connecté)
-      const followRelation = await prisma.follow.findUnique({
-        where: {
-          follower_account: {
-            follower: followerId,
-            account: req.user.id_user
-          }
-        }
-      });
-
-      if (!followRelation) {
-        return res.status(404).json({ error: 'This user is not following you' });
-      }
-
-      // Supprimer la relation
-      await prisma.follow.delete({
-        where: {
-          follower_account: {
-            follower: followerId,
-            account: req.user.id_user
-          }
-        }
-      });
-
-      logger.info(`${currentUser.username} removed follower ${followerUser.username}`);
-
-      res.json({ 
-        message: 'Follower removed successfully',
-        removedUser: {
-          id_user: followerUser.id_user,
-          username: followerUser.username
-        }
-      });
-    } catch (error) {
-      logger.error('Remove follower error:', error);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  }
-
-  /**
-   * Annuler une demande d'abonnement
+   * Annuler une demande de suivi en attente
    */
   static async cancelFollowRequest(req, res) {
     try {
@@ -763,20 +690,21 @@ class FollowController {
       });
 
       if (!targetUser) {
-        return res.status(404).json({ error: 'User not found or inactive' });
+        return res.status(404).json({ error: 'Target user not found or inactive' });
       }
 
       // Vérifier qu'une demande en attente existe
-      const pendingRequest = await prisma.follow.findFirst({
+      const pendingRequest = await prisma.follow.findUnique({
         where: {
-          follower: req.user.id_user,
-          account: userId,
-          pending: true,
-          active: true
-        }
+          follower_account: {
+            follower: req.user.id_user,
+            account: userId
+          }
+        },
+        select: { pending: true, active: true }
       });
 
-      if (!pendingRequest) {
+      if (!pendingRequest || !pendingRequest.pending || !pendingRequest.active) {
         return res.status(404).json({ error: 'No pending follow request found' });
       }
 

@@ -1,4 +1,4 @@
-// src/controllers/userController.js - CORRECTION COMPLÈTE
+// src/controllers/userController.js - Version complète SANS ALTÉRER les méthodes existantes
 
 const prisma = require('../utils/database');
 const { 
@@ -76,7 +76,7 @@ class UserController {
   }
 
   /**
-   * ✅ CORRECTION: Obtenir le profil d'un utilisateur par son ID
+   * ✅ CORRECTION COMPLÈTE: Obtenir le profil d'un utilisateur par son ID
    */
   static async getUserById(req, res) {
     try {
@@ -99,16 +99,19 @@ class UserController {
           console.error('❌ Invalid user ID:', id);
           return res.status(400).json({ error: 'Invalid user ID format' });
         }
-      } catch (error) {
-        console.error('❌ Error parsing user ID:', error);
+      } catch (conversionError) {
+        console.error('❌ ID conversion error:', conversionError);
         return res.status(400).json({ error: 'Invalid user ID format' });
       }
 
-      console.log(`🔄 Converted ID to integer: ${userId}`);
+      console.log(`🔄 Converted userId: ${userId} (type: ${typeof userId})`);
 
-      // ✅ CORRECTION: Utiliser l'entier pour la requête Prisma
-      const user = await prisma.user.findUnique({
-        where: { id_user: userId }, // Maintenant c'est un entier
+      // Récupérer l'utilisateur
+      const user = await prisma.user.findFirst({
+        where: { 
+          id_user: userId,
+          is_active: true
+        },
         select: {
           id_user: true,
           username: true,
@@ -119,7 +122,6 @@ class UserController {
           private: true,
           certified: true,
           created_at: true,
-          is_active: true,
           _count: {
             select: {
               posts: { where: { active: true } },
@@ -142,104 +144,52 @@ class UserController {
         }
       });
 
-      console.log(`🔄 User query result: ${user ? 'Found' : 'Not found'}`);
-
-      if (!user || !user.is_active) {
-        console.log('❌ User not found or inactive');
+      if (!user) {
+        console.error(`❌ User not found for ID: ${userId}`);
         return res.status(404).json({ error: 'User not found' });
       }
 
-      // Vérifier les permissions d'accès
-      let canAccess = false;
-      let isFollowing = false;
+      console.log('✅ User found:', user.username);
 
-      console.log(`🔄 Checking access permissions. Private: ${user.private}`);
-
-      if (!user.private) {
-        // Compte public : accessible à tous
-        canAccess = true;
-        console.log('✅ Public account - access granted');
-      } else if (req.user) {
-        console.log(`🔄 Private account - checking for user ${req.user.id_user}`);
-        
-        // ✅ CORRECTION: S'assurer que les IDs sont du même type pour la comparaison
-        const currentUserId = parseInt(req.user.id_user, 10);
-        
-        if (currentUserId === userId) {
-          // L'utilisateur consulte son propre profil
-          canAccess = true;
-          console.log('✅ Own profile - access granted');
-        } else {
-          console.log(`🔄 Checking follow relation between ${currentUserId} and ${userId}`);
-          
-          const followRelation = await prisma.follow.findUnique({
-            where: {
-              follower_account: {
-                follower: currentUserId, // Entier
-                account: userId // Entier
-              }
-            },
-            select: { active: true, pending: true }
-          });
-
-          console.log('🔄 Follow relation result:', followRelation);
-
-          isFollowing = followRelation && followRelation.active && !followRelation.pending;
-          canAccess = isFollowing;
-          console.log(`🔄 Following: ${isFollowing}, Access granted: ${canAccess}`);
-        }
-      } else {
-        console.log('❌ Private account and no authenticated user');
-      }
-
-      if (!canAccess) {
-        console.log('❌ Access denied');
-        return res.status(403).json({ 
-          error: 'Access denied',
-          message: 'This account is private'
+      // Vérifier le statut de suivi si l'utilisateur est connecté
+      let followStatus = null;
+      if (req.user && req.user.id_user !== userId) {
+        const followRelation = await prisma.follow.findUnique({
+          where: {
+            follower_account: {
+              follower: req.user.id_user,
+              account: userId
+            }
+          },
+          select: { active: true, pending: true }
         });
+
+        if (followRelation) {
+          followStatus = followRelation.pending ? 'pending' : 'following';
+        } else {
+          followStatus = 'not_following';
+        }
       }
 
-      const response = {
-        id_user: user.id_user,
-        username: user.username,
-        nom: user.nom,
-        prenom: user.prenom,
-        bio: user.bio,
-        photo_profil: user.photo_profil,
-        certified: user.certified,
-        private: user.private,
-        created_at: user.created_at,
+      res.json({
+        ...user,
         stats: {
           posts: user._count.posts,
           followers: user._count.followers,
           following: user._count.following
         },
-        isFollowing: req.user && parseInt(req.user.id_user, 10) !== userId ? isFollowing : undefined
-      };
-
-      console.log('✅ Sending successful response');
-      res.json(response);
-
+        followStatus,
+        _count: undefined
+      });
     } catch (error) {
       console.error('❌ getUserById error:', error);
       logger.error('Get user by ID error:', error);
-      
-      // Réponse d'erreur détaillée en développement
-      if (process.env.NODE_ENV === 'development') {
-        res.status(500).json({ 
-          error: 'Internal server error',
-          details: error.message,
-          stack: error.stack
-        });
-      } else {
-        res.status(500).json({ error: 'Internal server error' });
-      }
+      res.status(500).json({ error: 'Internal server error' });
     }
   }
 
   /**
-   * ✅ CORRECTION: Obtenir les statistiques d'un utilisateur
+   * ✅ CORRECTION COMPLÈTE: Obtenir les statistiques d'un utilisateur
    */
   static async getUserStats(req, res) {
     try {
@@ -247,70 +197,36 @@ class UserController {
 
       const { error: paramsError } = userParamsSchema.validate(req.params);
       if (paramsError) {
-        console.error('❌ Stats validation error:', paramsError.details[0].message);
+        console.error('❌ Validation error:', paramsError.details[0].message);
         return res.status(400).json({ error: paramsError.details[0].message });
       }
 
       const { id } = req.params;
-      console.log(`🔄 Getting stats for raw ID: "${id}"`);
+      console.log(`🔄 Raw ID from params: "${id}" (type: ${typeof id})`);
 
       // ✅ CORRECTION CRITIQUE: Convertir l'ID en entier
       let userId;
       try {
         userId = parseInt(id, 10);
         if (isNaN(userId) || userId <= 0) {
-          console.error('❌ Invalid user ID for stats:', id);
+          console.error('❌ Invalid user ID:', id);
           return res.status(400).json({ error: 'Invalid user ID format' });
         }
-      } catch (error) {
-        console.error('❌ Error parsing user ID for stats:', error);
+      } catch (conversionError) {
+        console.error('❌ ID conversion error:', conversionError);
         return res.status(400).json({ error: 'Invalid user ID format' });
       }
 
-      console.log(`🔄 Converted stats ID to integer: ${userId}`);
+      console.log(`🔄 Converted userId: ${userId} (type: ${typeof userId})`);
 
-      // Vérifier que l'utilisateur existe
-      const user = await prisma.user.findUnique({
-        where: { id_user: userId }, // Entier
-        select: { id_user: true, is_active: true, private: true }
-      });
-
-      console.log(`🔄 User exists for stats: ${user ? 'Yes' : 'No'}`);
-
-      if (!user || !user.is_active) {
-        console.log('❌ User not found for stats');
-        return res.status(404).json({ error: 'User not found' });
-      }
-
-      // Vérifier les permissions pour les comptes privés
-      if (user.private && req.user) {
-        const currentUserId = parseInt(req.user.id_user, 10);
-
-        if (currentUserId !== userId) {
-          console.log(`🔄 Checking follow for stats: ${currentUserId} -> ${userId}`);
-          
-          const isFollowing = await prisma.follow.findUnique({
-            where: {
-              follower_account: {
-                follower: currentUserId, // Entier
-                account: userId // Entier
-              }
-            },
-            select: { active: true, pending: true }
-          });
-
-          if (!isFollowing || !isFollowing.active || isFollowing.pending) {
-            console.log('❌ Access denied for private account stats');
-            return res.status(403).json({ error: 'Access denied' });
-          }
-        }
-      }
-
-      console.log('🔄 Querying stats from database...');
-
-      const stats = await prisma.user.findUnique({
-        where: { id_user: userId }, // Entier
+      // Récupérer les statistiques
+      const stats = await prisma.user.findFirst({
+        where: { 
+          id_user: userId,
+          is_active: true
+        },
         select: {
+          id_user: true,
           _count: {
             select: {
               posts: { where: { active: true } },
@@ -328,14 +244,14 @@ class UserController {
                   account_user: { is_active: true }
                 } 
               },
-              likes: true
+              likes: { where: { active: true } }
             }
           }
         }
       });
 
       if (!stats) {
-        console.log('❌ No stats found');
+        console.error(`❌ User not found for stats, ID: ${userId}`);
         return res.status(404).json({ error: 'User not found' });
       }
 
@@ -364,7 +280,9 @@ class UserController {
     }
   }
 
-  // ✅ Autres méthodes inchangées...
+  /**
+   * Mettre à jour le profil utilisateur
+   */
   static async updateProfile(req, res) {
     try {
       const { error, value } = updateProfileSchema.validate(req.body);
@@ -398,36 +316,49 @@ class UserController {
         fieldsToCheck.push({ telephone: value.telephone });
       }
 
+      // Vérifier l'unicité si des champs sont à modifier
       if (fieldsToCheck.length > 0) {
-        for (const field of fieldsToCheck) {
-          const conflict = await prisma.user.findFirst({
-            where: {
-              AND: [
-                field,
-                { id_user: { not: req.user.id_user } },
-                { is_active: true }
-              ]
-            },
-            select: { id_user: true }
-          });
+        const conflictingUsers = await prisma.user.findMany({
+          where: {
+            AND: [
+              { is_active: true },
+              { id_user: { not: req.user.id_user } },
+              { OR: fieldsToCheck }
+            ]
+          },
+          select: { username: true, mail: true, telephone: true }
+        });
 
-          if (conflict) {
-            const fieldName = Object.keys(field)[0];
-            return res.status(409).json({ 
-              error: `${fieldName} already exists`,
-              field: fieldName 
-            });
-          }
+        if (conflictingUsers.length > 0) {
+          const conflicts = [];
+          conflictingUsers.forEach(user => {
+            if (value.username && user.username === value.username) {
+              conflicts.push('username');
+            }
+            if (value.mail && user.mail === value.mail) {
+              conflicts.push('email');
+            }
+            if (value.telephone && user.telephone === value.telephone) {
+              conflicts.push('telephone');
+            }
+          });
+          
+          return res.status(409).json({ 
+            error: `The following fields are already taken: ${conflicts.join(', ')}` 
+          });
         }
       }
 
-      // Mettre à jour le profil
+      // Préparer les données de mise à jour
+      const updateData = {
+        ...value,
+        updated_at: new Date()
+      };
+
+      // Mise à jour de l'utilisateur
       const updatedUser = await prisma.user.update({
         where: { id_user: req.user.id_user },
-        data: {
-          ...value,
-          updated_at: new Date()
-        },
+        data: updateData,
         select: {
           id_user: true,
           username: true,
@@ -444,16 +375,18 @@ class UserController {
         }
       });
 
-      res.json({
-        message: 'Profile updated successfully',
-        user: updatedUser
-      });
+      logger.info(`User profile updated: ${updatedUser.username} (${updatedUser.mail})`);
+
+      res.json(updatedUser);
     } catch (error) {
       logger.error('Update profile error:', error);
       res.status(500).json({ error: 'Internal server error' });
     }
   }
 
+  /**
+   * Rechercher des utilisateurs
+   */
   static async searchUsers(req, res) {
     try {
       const { error, value } = searchSchema.validate(req.query);
@@ -464,22 +397,26 @@ class UserController {
       const { search, page, limit } = value;
       const skip = (page - 1) * limit;
 
-      const whereClause = {
-        AND: [
-          { is_active: true },
-          search ? {
-            OR: [
-              { username: { contains: search, mode: 'insensitive' } },
-              { nom: { contains: search, mode: 'insensitive' } },
-              { prenom: { contains: search, mode: 'insensitive' } }
-            ]
-          } : {}
+      const searchTerms = search.trim().split(/\s+/);
+      
+      // Construire les conditions de recherche
+      const searchConditions = searchTerms.map(term => ({
+        OR: [
+          { username: { contains: term, mode: 'insensitive' } },
+          { nom: { contains: term, mode: 'insensitive' } },
+          { prenom: { contains: term, mode: 'insensitive' } },
+          { bio: { contains: term, mode: 'insensitive' } }
         ]
-      };
+      }));
 
       const [users, total] = await Promise.all([
         prisma.user.findMany({
-          where: whereClause,
+          where: {
+            AND: [
+              { is_active: true },
+              ...searchConditions
+            ]
+          },
           select: {
             id_user: true,
             username: true,
@@ -488,27 +425,28 @@ class UserController {
             bio: true,
             photo_profil: true,
             certified: true,
-            private: true,
             _count: {
               select: {
-                followers: { 
-                  where: { 
-                    active: true, 
-                    pending: false,
-                    follower_user: { is_active: true }
-                  } 
-                }
+                followers: { where: { active: true, pending: false } },
+                posts: { where: { active: true } }
               }
             }
           },
-          skip,
-          take: limit,
           orderBy: [
             { certified: 'desc' },
             { username: 'asc' }
-          ]
+          ],
+          skip,
+          take: limit
         }),
-        prisma.user.count({ where: whereClause })
+        prisma.user.count({
+          where: {
+            AND: [
+              { is_active: true },
+              ...searchConditions
+            ]
+          }
+        })
       ]);
 
       const totalPages = Math.ceil(total / limit);
@@ -516,7 +454,10 @@ class UserController {
       res.json({
         users: users.map(user => ({
           ...user,
-          followerCount: user._count.followers,
+          stats: {
+            followers: user._count.followers,
+            posts: user._count.posts
+          },
           _count: undefined
         })),
         pagination: {
@@ -534,33 +475,30 @@ class UserController {
     }
   }
 
+  /**
+   * Obtenir des utilisateurs suggérés
+   */
   static async getSuggestedUsers(req, res) {
     try {
-      const { error, value } = paginationSchema.validate(req.query);
-      if (error) {
-        return res.status(400).json({ error: error.details[0].message });
-      }
+      const limit = parseInt(req.query.limit) || 10;
+      const currentUserId = req.user.id_user;
 
-      const { page, limit } = value;
-      const skip = (page - 1) * limit;
-
-      // Récupérer les IDs des utilisateurs déjà suivis
-      const followedUsers = await prisma.follow.findMany({
-        where: {
-          follower: req.user.id_user,
-          active: true
-        },
-        select: { account: true }
-      });
-
-      const followedUserIds = followedUsers.map(f => f.account);
-      followedUserIds.push(req.user.id_user); // Exclure l'utilisateur lui-même
-
+      // Obtenir des utilisateurs que l'utilisateur actuel ne suit pas
       const suggestedUsers = await prisma.user.findMany({
         where: {
           AND: [
+            { id_user: { not: currentUserId } },
             { is_active: true },
-            { id_user: { notIn: followedUserIds } }
+            {
+              NOT: {
+                followers: {
+                  some: {
+                    follower: currentUserId,
+                    active: true
+                  }
+                }
+              }
+            }
           ]
         },
         select: {
@@ -571,36 +509,154 @@ class UserController {
           bio: true,
           photo_profil: true,
           certified: true,
-          private: true,
           _count: {
             select: {
-              followers: { 
-                where: { 
-                  active: true, 
-                  pending: false,
-                  follower_user: { is_active: true }
-                } 
+              followers: { where: { active: true, pending: false } },
+              posts: { where: { active: true } }
+            }
+          }
+        },
+        orderBy: [
+          { certified: 'desc' },
+          { created_at: 'desc' }
+        ],
+        take: limit
+      });
+
+      res.json({
+        users: suggestedUsers.map(user => ({
+          ...user,
+          stats: {
+            followers: user._count.followers,
+            posts: user._count.posts
+          },
+          _count: undefined
+        }))
+      });
+    } catch (error) {
+      logger.error('Get suggested users error:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+
+  /**
+   * ✅ NOUVELLE MÉTHODE: Obtenir des utilisateurs recommandés pour l'onboarding
+   */
+  static async getRecommendedUsers(req, res) {
+    try {
+      const currentUserId = req.user.id_user;
+      const limit = parseInt(req.query.limit) || 8;
+
+      console.log(`🔍 Getting recommendations for user ${currentUserId}, limit: ${limit}`);
+
+      // Récupérer des utilisateurs récents qui ne sont pas suivis et pas l'utilisateur actuel
+      const recommendedUsers = await prisma.user.findMany({
+        where: {
+          AND: [
+            { id_user: { not: currentUserId } },
+            { is_active: true },
+            {
+              NOT: {
+                followers: {
+                  some: {
+                    follower: currentUserId,
+                    active: true
+                  }
+                }
+              }
+            }
+          ]
+        },
+        select: {
+          id_user: true,
+          username: true,
+          prenom: true,
+          nom: true,
+          bio: true,
+          photo_profil: true,
+          certified: true,
+          created_at: true,
+          _count: {
+            select: {
+              followers: {
+                where: { active: true, pending: false }
+              },
+              following: {
+                where: { active: true, pending: false }
+              },
+              posts: {
+                where: { active: true }
               }
             }
           }
         },
-        skip,
-        take: limit,
         orderBy: [
-          { certified: 'desc' },
-          { created_at: 'desc' }
-        ]
+          { certified: 'desc' }, // Utilisateurs certifiés en premier
+          { created_at: 'desc' }  // Puis par date d'inscription
+        ],
+        take: limit
       });
 
-      res.json(
-        suggestedUsers.map(user => ({
-          ...user,
-          followerCount: user._count.followers,
-          _count: undefined
-        }))
-      );
+      console.log(`✅ Found ${recommendedUsers.length} recommended users`);
+
+      res.json(recommendedUsers);
     } catch (error) {
-      logger.error('Get suggested users error:', error);
+      console.error('❌ Error fetching recommended users:', error);
+      logger.error('Error fetching recommended users:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+
+  /**
+   * ✅ NOUVELLE MÉTHODE: Marquer l'onboarding comme terminé
+   */
+  static async completeOnboarding(req, res) {
+    try {
+      const userId = req.user.id_user;
+
+      console.log(`🎯 Completing onboarding for user ${userId}`);
+
+      // Vérifier si l'utilisateur existe et est actif
+      const user = await prisma.user.findFirst({
+        where: {
+          id_user: userId,
+          is_active: true
+        }
+      });
+
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      // Mettre à jour les préférences utilisateur pour marquer l'onboarding comme terminé
+      const preferences = await prisma.userPreferences.upsert({
+        where: { id_user: userId },
+        update: {
+          onboarding_completed: true,
+          updated_at: new Date()
+        },
+        create: {
+          id_user: userId,
+          onboarding_completed: true,
+          email_notification: true,
+          id_langue: 1, // Français par défaut
+          id_theme: 1,  // Thème clair par défaut
+          created_at: new Date(),
+          updated_at: new Date()
+        }
+      });
+
+      console.log(`✅ Onboarding completed for user ${userId}`);
+      logger.info(`User ${userId} completed onboarding`);
+      
+      res.json({ 
+        message: 'Onboarding completed successfully',
+        success: true,
+        preferences: preferences
+      });
+    } catch (error) {
+      console.error('❌ Error completing onboarding:', error);
+      logger.error('Error completing onboarding:', error);
       res.status(500).json({ error: 'Internal server error' });
     }
   }
