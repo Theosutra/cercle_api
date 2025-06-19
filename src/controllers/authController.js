@@ -145,7 +145,7 @@ class AuthController {
   }
 
   /**
-   * Connexion d'un utilisateur
+   * Connexion d'un utilisateur avec redirection automatique pour admin/modérateur
    */
   static async login(req, res) {
     try {
@@ -158,12 +158,12 @@ class AuthController {
 
       // Rechercher l'utilisateur ACTIF avec ce mail
       const user = await prisma.user.findFirst({
-        where: { 
+        where: {
           mail: mail,
           is_active: true
         },
-        include: { 
-          role: true 
+        include: {
+          role: true  // ✅ AJOUT: Inclure le rôle pour la redirection
         }
       });
 
@@ -175,15 +175,16 @@ class AuthController {
       }
 
       // Vérifier le mot de passe
-      const isPasswordValid = await bcrypt.compare(password, user.password_hash);
-      if (!isPasswordValid) {
+      const isValidPassword = await bcrypt.compare(password, user.password_hash);
+      if (!isValidPassword) {
+        logger.warn(`Failed login attempt for user: ${mail}`);
         return res.status(401).json({ 
           error: 'Invalid credentials',
           message: 'Email or password is incorrect'
         });
       }
 
-      // Vérifier si l'utilisateur n'a pas de ban en cours
+      // ✅ AJOUT: Vérifier si l'utilisateur est banni
       const currentDate = new Date();
       const activeBan = await prisma.userBannissement.findFirst({
         where: {
@@ -194,45 +195,50 @@ class AuthController {
       });
 
       if (activeBan) {
-        return res.status(403).json({ 
+        return res.status(403).json({
           error: 'Account banned',
-          message: 'Your account is currently banned',
-          banInfo: {
+          message: 'Your account is temporarily banned',
+          ban_info: {
             reason: activeBan.raison,
-            bannedUntil: activeBan.fin_ban
+            end_date: activeBan.fin_ban
           }
         });
       }
 
-      // Mettre à jour last_login
-      await prisma.user.update({
-        where: { id_user: user.id_user },
-        data: { last_login: currentDate }
-      });
-
       // Générer les tokens
       const { accessToken, refreshToken } = TokenService.generateTokens(user.id_user);
 
-      logger.info(`User logged in: ${user.username} (${user.mail})`);
+      // Mettre à jour la dernière connexion
+      await prisma.user.update({
+        where: { id_user: user.id_user },
+        data: { last_login: new Date() }
+      });
+
+      logger.info(`User logged in: ${user.username} (${user.role.role})`);
+
+      // ✅ AJOUT: Déterminer la redirection basée sur le rôle
+      let redirectTo = '/feed'; // Page par défaut pour les utilisateurs normaux
+      const isAdminOrModerator = ['ADMIN', 'MODERATOR'].includes(user.role.role);
+      
+      if (isAdminOrModerator) {
+        redirectTo = '/admin/dashboard'; // Redirection vers le backoffice
+      }
 
       // Retourner les informations sans le hash du mot de passe
-      const { password_hash: __, ...userResponse } = user;
+      const { password_hash: _, ...userResponse } = user;
 
       res.json({
         message: 'Login successful',
-        user: {
-          id_user: userResponse.id_user,
-          username: userResponse.username,
-          mail: userResponse.mail,
-          nom: userResponse.nom,
-          prenom: userResponse.prenom,
-          role: userResponse.role.role,
-          certified: userResponse.certified,
-          photo_profil: userResponse.photo_profil,
-          private: userResponse.private
-        },
+        user: userResponse,
         accessToken,
-        refreshToken
+        refreshToken,
+        // ✅ AJOUT: Informations de redirection
+        redirect: {
+          should_redirect: isAdminOrModerator,
+          redirect_to: redirectTo,
+          is_admin: user.role.role === 'ADMIN',
+          is_moderator: user.role.role === 'MODERATOR'
+        }
       });
     } catch (error) {
       logger.error('Login error:', error);
@@ -241,7 +247,7 @@ class AuthController {
   }
 
   /**
-   * ✅ CORRECTION: Rafraîchissement du token d'accès
+   * Rafraîchir le token d'accès
    */
   static async refresh(req, res) {
     try {
@@ -252,42 +258,48 @@ class AuthController {
 
       const { refreshToken } = value;
 
-      // Vérifier le refresh token
-      const decoded = TokenService.verifyRefreshToken(refreshToken);
-      
-      // ✅ CORRECTION: Utiliser decoded.id_user au lieu de decoded.userId
-      const user = await prisma.user.findUnique({
-        where: { id_user: decoded.id_user }, // ✅ CORRECTION
-        select: { id_user: true, is_active: true }
-      });
+      try {
+        const decoded = TokenService.verifyRefreshToken(refreshToken);
+        
+        const user = await prisma.user.findFirst({
+          where: { 
+            id_user: decoded.id_user,
+            is_active: true 
+          }
+        });
 
-      if (!user || !user.is_active) {
-        return res.status(401).json({ error: 'User not found or inactive' });
-      }
+        if (!user) {
+          return res.status(401).json({ 
+            error: 'Invalid token',
+            message: 'User not found or inactive'
+          });
+        }
 
-      // ✅ CORRECTION: Générer un nouveau token d'accès avec decoded.id_user
-      const { accessToken: newAccessToken } = TokenService.generateTokens(decoded.id_user);
+        const newAccessToken = TokenService.generateAccessToken({
+          id_user: user.id_user,
+          username: user.username,
+          mail: user.mail
+        });
 
-      res.json({ 
-        accessToken: newAccessToken,
-        message: 'Token refreshed successfully'
-      });
-    } catch (error) {
-      logger.error('Refresh token error:', error);
-      
-      if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
-        return res.status(403).json({ 
-          error: 'Invalid refresh token',
-          message: 'Please login again'
+        res.json({
+          accessToken: newAccessToken,
+          expiresIn: 3600
+        });
+
+      } catch (tokenError) {
+        return res.status(401).json({ 
+          error: 'Invalid token',
+          message: 'Refresh token is invalid or expired'
         });
       }
-      
+    } catch (error) {
+      logger.error('Refresh token error:', error);
       res.status(500).json({ error: 'Internal server error' });
     }
   }
 
   /**
-   * Changement de mot de passe
+   * Changer le mot de passe
    */
   static async changePassword(req, res) {
     try {
@@ -296,26 +308,27 @@ class AuthController {
         return res.status(400).json({ error: error.details[0].message });
       }
 
-      const { password } = value;
+      const { currentPassword, newPassword } = value;
 
-      // Vérifier que l'utilisateur existe et est actif
-      const user = await prisma.user.findFirst({
-        where: { 
-          id_user: req.user.id_user,
-          is_active: true
-        },
-        select: { id_user: true, username: true }
+      const user = await prisma.user.findUnique({
+        where: { id_user: req.user.id_user }
       });
 
       if (!user) {
-        return res.status(404).json({ error: 'User not found or inactive' });
+        return res.status(404).json({ error: 'User not found' });
       }
 
-      // Hasher le nouveau mot de passe
-      const saltRounds = parseInt(process.env.BCRYPT_ROUNDS) || 12;
-      const newPasswordHash = await bcrypt.hash(password, saltRounds);
+      const isValidPassword = await bcrypt.compare(currentPassword, user.password_hash);
+      if (!isValidPassword) {
+        return res.status(401).json({ 
+          error: 'Invalid credentials',
+          message: 'Current password is incorrect'
+        });
+      }
 
-      // Mettre à jour le mot de passe et updated_at
+      const saltRounds = parseInt(process.env.BCRYPT_ROUNDS) || 12;
+      const newPasswordHash = await bcrypt.hash(newPassword, saltRounds);
+
       await prisma.user.update({
         where: { id_user: req.user.id_user },
         data: { 
@@ -337,14 +350,14 @@ class AuthController {
   }
 
   /**
-   * Déconnexion (côté client principalement, invalide les tokens)
+   * Déconnexion (invalidation du token côté client)
    */
   static async logout(req, res) {
     try {
       logger.info(`User logged out: ${req.user.username}`);
       
       res.json({ 
-        message: 'Logout successful',
+        message: 'Logged out successfully',
         note: 'Please remove tokens from client storage'
       });
     } catch (error) {

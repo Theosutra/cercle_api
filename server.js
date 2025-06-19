@@ -13,6 +13,9 @@ const likeRoutes = require('./src/routes/likeRoutes');
 const followRoutes = require('./src/routes/followRoutes');
 const messageRoutes = require('./src/routes/messageRoutes');
 
+// ✅ NOUVEAU: Import des routes admin
+const adminRoutes = require('./src/routes/adminRoutes');
+
 // Import des middlewares existants
 const errorHandler = require('./src/middleware/errorHandler');
 const logger = require('./src/utils/logger');
@@ -130,6 +133,9 @@ app.use('/api/v1/likes', likeRoutes);
 app.use('/api/v1/follow', followRoutes);
 app.use('/api/v1/messages', messageRoutes);
 
+// ✅ NOUVEAU: Routes admin (backoffice)
+app.use('/api/v1/admin', adminRoutes);
+
 // ✅ Health check
 app.get('/health', async (req, res) => {
   try {
@@ -161,92 +167,64 @@ app.get('/', (req, res) => {
   res.json({
     message: 'Social Network API is running!',
     version: '1.0.0',
-    environment: process.env.NODE_ENV || 'development',
+    timestamp: new Date().toISOString(),
+    features: [
+      'User authentication & authorization',
+      'Posts with likes and comments',
+      'Follow system',
+      'Private messaging',
+      'Admin backoffice', // ✅ NOUVEAU
+      'Rate limiting',
+      'File uploads'
+    ],
     endpoints: {
-      health: '/health',
       auth: '/api/v1/auth',
-      users: '/api/v1/users',
+      users: '/api/v1/users', 
       posts: '/api/v1/posts',
       likes: '/api/v1/likes',
       follow: '/api/v1/follow',
-      messages: '/api/v1/messages'
-    },
-    features: {
-      posts: {
-        comments: 'Posts support replies via post_parent field',
-        endpoints: [
-          'POST /api/v1/posts (with optional post_parent)',
-          'GET /api/v1/posts/:id/replies',
-          'GET /api/v1/posts/:id/stats'
-        ]
-      },
-      likes: {
-        support: 'Posts and comments can be liked',
-        endpoint: 'POST /api/v1/likes/posts/:id'
-      }
+      messages: '/api/v1/messages',
+      admin: '/api/v1/admin' // ✅ NOUVEAU
     }
   });
 });
 
-// ✅ Route 404 pour les API
-app.use('/api/*', (req, res) => {
-  res.status(404).json({
-    error: 'Endpoint not found',
-    message: `The endpoint ${req.method} ${req.originalUrl} does not exist`,
-    availableEndpoints: {
-      auth: '/api/v1/auth',
-      users: '/api/v1/users',
-      posts: '/api/v1/posts',
-      likes: '/api/v1/likes',
-      follow: '/api/v1/follow',
-      messages: '/api/v1/messages'
-    }
-  });
-});
-
-// ✅ Error handling
-app.use(errorHandler);
+// ✅ 404 handler
 app.use('*', (req, res) => {
-  res.status(404).json({ error: 'Route not found' });
+  res.status(404).json({ 
+    error: 'Route not found',
+    message: `Route ${req.method} ${req.originalUrl} does not exist`,
+    available_routes: [
+      'GET /',
+      'GET /health',
+      'POST /api/v1/auth/login',
+      'POST /api/v1/auth/register',
+      'GET /api/v1/posts/public',
+      'GET /api/v1/admin/dashboard (admin only)' // ✅ NOUVEAU
+    ]
+  });
 });
 
-// ✅ Test de connexion à la base de données au démarrage
+// ✅ Error handler (doit être en dernier)
+app.use(errorHandler);
+
+// ✅ Test de connexion à la base de données
 const testDatabaseConnection = async () => {
   try {
-    console.log('🔄 Testing database connection...');
-    
     const db = require('./src/utils/database');
+    await db.$connect();
+    logger.info('✅ Database connected successfully');
     
-    // Test des tables principales
-    const [userCount, postCount, likeCount] = await Promise.all([
-      db.user.count(),
-      db.post.count(),
-      db.like.count()
-    ]);
-    
-    console.log('✅ Database connection successful');
-    console.log(`📊 Database stats: ${userCount} users, ${postCount} posts, ${likeCount} likes`);
-    
-    // Test d'une requête like complexe
-    const testLike = await db.like.findFirst({
-      include: { 
-        post: { select: { id_post: true, active: true } },
-        user: { select: { id_user: true, username: true } }
-      }
-    });
-    
-    if (testLike) {
-      console.log('✅ Complex like query test OK');
-    }
-    
-    return true;
+    // Test d'une requête simple
+    const userCount = await db.user.count();
+    logger.info(`📊 Database stats: ${userCount} users total`);
   } catch (error) {
-    console.error('❌ Database connection failed:', error);
-    return false;
+    logger.error('❌ Database connection failed:', error);
+    process.exit(1);
   }
 };
 
-// ✅ Gestion des erreurs non capturées
+// ✅ Gestion des erreurs non gérées
 process.on('uncaughtException', (error) => {
   logger.error('Uncaught Exception:', error);
   process.exit(1);
@@ -282,8 +260,10 @@ app.listen(PORT, async () => {
   }
   
   logger.info(`✨ Features enabled:`);
-  logger.info(`   - Comments system (via post_parent)`);
-  logger.info(`   - Enhanced likes with corrected routes`);
+  logger.info(`   - User authentication & roles`);
+  logger.info(`   - Admin backoffice system`); // ✅ NOUVEAU
+  logger.info(`   - Posts, likes & comments`);
+  logger.info(`   - Follow & messaging system`);
   logger.info(`   - Intelligent rate limiting`);
   
   // Test de la base de données
