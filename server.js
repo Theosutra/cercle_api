@@ -1,4 +1,4 @@
-// server.js - CORRECTION FINALE
+// server.js - VERSION COMPLÈTE CORRIGÉE
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -120,8 +120,9 @@ app.use('/api/v1/likes', authenticateToken, likeRoutes);
 app.use('/api/v1/follow', authenticateToken, followRoutes);
 app.use('/api/v1/messages', authenticateToken, messageRoutes);
 
-// 3. Routes admin (double authentification)
-app.use('/api/v1/admin', authenticateToken, adminRoutes);
+// 3. ✅ CORRECTION ADMIN : Pas de double authentification
+// adminRoutes.js contient déjà router.use(authenticateToken)
+app.use('/api/v1/admin', adminRoutes);
 
 // Health check
 app.get('/health', async (req, res) => {
