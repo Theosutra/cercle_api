@@ -1,3 +1,4 @@
+// src/routes/adminRoutes.js - CORRIGÉ avec route suppression posts
 const express = require('express');
 const { authenticateToken } = require('../middleware/auth');
 const { requireAdminOrModerator, requireAdmin } = require('../middleware/adminAuth');
@@ -18,6 +19,8 @@ router.get('/dashboard', requireAdminOrModerator, AdminController.getDashboard);
 // Gestion des posts
 router.get('/posts', requireAdminOrModerator, AdminController.getAllPosts);
 router.get('/posts/reported', requireAdminOrModerator, AdminController.getReportedPosts);
+// ✅ AJOUT : Route pour supprimer un post depuis l'admin
+router.delete('/posts/:postId', requireAdminOrModerator, AdminController.deletePost);
 
 // Gestion des utilisateurs - lecture
 router.get('/users', requireAdminOrModerator, AdminController.getAllUsers);
@@ -32,8 +35,5 @@ router.delete('/users/:userId', requireAdminOrModerator, AdminController.deleteU
 
 // Gestion des rôles - uniquement admin
 router.put('/users/:userId/role', requireAdmin, AdminController.changeUserRole);
-
-// ✅ CORRECTION : Supprimer cette route qui n'existe pas encore
-// router.post('/users/:userId/restore', requireAdmin, AdminController.restoreUser);
 
 module.exports = router;

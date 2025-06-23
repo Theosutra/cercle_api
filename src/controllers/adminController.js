@@ -106,7 +106,7 @@ class AdminController {
   }
 
   /**
-   * Récupérer tous les posts avec pagination - Version sécurisée
+   * Récupérer tous les posts avec pagination - Version sécurisée CORRIGÉE
    */
   static async getAllPosts(req, res) {
     try {
@@ -135,6 +135,7 @@ class AdminController {
         };
       }
 
+      // ✅ CORRECTION COMPLÈTE : Requête avec includes et pagination
       const [posts, totalCount] = await Promise.all([
         prisma.post.findMany({
           where: whereClause,
@@ -145,14 +146,17 @@ class AdminController {
                 username: true,
                 nom: true,
                 prenom: true,
+                photo_profil: true,
+                mail: true,
                 certified: true,
-                photo_profil: true
+                private: true,
+                is_active: true
               }
             },
             _count: {
               select: {
-                likes: true,
-                children: true
+                likes: { where: { active: true } },
+                replies: { where: { active: true } }
               }
             }
           },
@@ -160,27 +164,57 @@ class AdminController {
           skip: offset,
           take: limit
         }),
-        prisma.post.count({ where: whereClause })
+        prisma.post.count({
+          where: whereClause
+        })
       ]);
 
-      const totalPages = Math.ceil(totalCount / limit);
+      // ✅ CORRECTION : Formater les posts avec author mapping
+      const formattedPosts = posts.map(post => ({
+        ...post,
+        author: post.user, // Mapping user -> author pour compatibilité frontend
+        likeCount: post._count.likes,
+        replyCount: post._count.replies,
+        // Nettoyer les propriétés internes
+        _count: undefined,
+        user: undefined
+      }));
 
-      res.json({
-        posts,
+      // ✅ CORRECTION : Réponse structurée avec pagination
+      const totalPages = Math.ceil(totalCount / limit);
+      
+      const response = {
+        posts: formattedPosts,
         pagination: {
           current_page: page,
           total_pages: totalPages,
-          total_count: totalCount,
-          limit,
+          total: totalCount,
+          limit: limit,
           has_next: page < totalPages,
           has_prev: page > 1
         }
-      });
+      };
+
+      console.log(`✅ Admin getAllPosts: ${formattedPosts.length} posts returned`);
+      res.json(response);
 
     } catch (error) {
-      logger.error('Get all posts error:', error);
-      console.error('Posts error details:', error);
-      res.status(500).json({ error: 'Erreur lors du chargement des posts' });
+      logger.error('Admin getAllPosts error:', error);
+      console.error('Get all posts error details:', error);
+      
+      // Retourner une structure par défaut en cas d'erreur
+      res.status(500).json({
+        posts: [],
+        pagination: {
+          current_page: 1,
+          total_pages: 0,
+          total: 0,
+          limit: 20,
+          has_next: false,
+          has_prev: false
+        },
+        error: 'Erreur lors du chargement des posts'
+      });
     }
   }
 
@@ -213,68 +247,44 @@ class AdminController {
       }
 
       // Si la table existe, essayer de récupérer les données
+      const offset = (page - 1) * limit;
+      
       try {
-        const reports = await prisma.report.findMany({
-          where: { processed: false },
-          include: {
-            post: {
-              include: {
-                user: {
-                  select: {
-                    id_user: true,
-                    username: true,
-                    nom: true,
-                    prenom: true,
-                    certified: true
+        const [reportedPosts, totalCount] = await Promise.all([
+          prisma.report.findMany({
+            where: { processed: false },
+            include: {
+              post: {
+                include: {
+                  user: {
+                    select: {
+                      id_user: true,
+                      username: true,
+                      nom: true,
+                      prenom: true,
+                      photo_profil: true
+                    }
                   }
-                },
-                _count: {
-                  select: {
-                    likes: true,
-                    children: true
-                  }
+                }
+              },
+              reporter: {
+                select: {
+                  id_user: true,
+                  username: true
                 }
               }
             },
-            user: {
-              select: {
-                id_user: true,
-                username: true,
-                nom: true,
-                prenom: true
-              }
-            }
-          },
-          orderBy: { reported_at: 'desc' },
-          take: limit,
-          skip: (page - 1) * limit
-        });
+            orderBy: { reported_at: 'desc' },
+            skip: offset,
+            take: limit
+          }),
+          prisma.report.count({ where: { processed: false } })
+        ]);
 
-        // Grouper les signalements par post
-        const groupedReports = {};
-        reports.forEach(report => {
-          const postId = report.id_post;
-          if (!groupedReports[postId]) {
-            groupedReports[postId] = {
-              post: report.post,
-              reports: [],
-              total_reports: 0
-            };
-          }
-          groupedReports[postId].reports.push({
-            id_report: report.id_report,
-            reason: report.reason,
-            reported_at: report.reported_at,
-            reporter: report.user
-          });
-          groupedReports[postId].total_reports++;
-        });
-
-        const totalCount = await prisma.report.count({ where: { processed: false } });
         const totalPages = Math.ceil(totalCount / limit);
 
         res.json({
-          reported_posts: Object.values(groupedReports),
+          reported_posts: reportedPosts,
           pagination: {
             current_page: page,
             total_pages: totalPages,
@@ -285,8 +295,8 @@ class AdminController {
           }
         });
 
-      } catch (queryError) {
-        console.log('Error querying reports, returning empty result');
+      } catch (dataError) {
+        console.log('Error fetching reported posts data, returning empty result');
         res.json({
           reported_posts: [],
           pagination: {
@@ -452,25 +462,19 @@ class AdminController {
           ban_details: {
             user: targetUser.username,
             reason: raison,
-            duration_hours: duration_hours,
-            end_date: banEndDate
+            duration_hours,
+            ban_end: banEndDate
           }
         });
 
       } catch (banError) {
-        console.log('Table userBannissement not available, simulating ban');
-        
-        // Désactiver l'utilisateur comme alternative
-        await prisma.user.update({
-          where: { id_user: parseInt(userId) },
-          data: { is_active: false }
-        });
-
-        res.json({
-          message: 'Utilisateur désactivé (système de bannissement indisponible)',
-          user: targetUser.username,
-          reason: raison
-        });
+        if (banError.code === 'P2002') {
+          return res.status(409).json({
+            error: 'Conflict',
+            message: 'Cet utilisateur est déjà banni'
+          });
+        }
+        throw banError;
       }
 
     } catch (error) {
@@ -481,7 +485,7 @@ class AdminController {
   }
 
   /**
-   * Supprimer un utilisateur
+   * Supprimer un utilisateur (soft delete)
    */
   static async deleteUser(req, res) {
     try {
@@ -512,11 +516,9 @@ class AdminController {
       // Soft delete : désactiver l'utilisateur
       await prisma.user.update({
         where: { id_user: parseInt(userId) },
-        data: { 
+        data: {
           is_active: false,
-          // Optionnel : anonymiser les données
-          mail: `deleted_${userId}@deleted.com`,
-          username: `deleted_user_${userId}`
+          updated_at: new Date()
         }
       });
 
@@ -539,6 +541,63 @@ class AdminController {
   }
 
   /**
+   * Supprimer un post (admin/modérateur)
+   */
+  static async deletePost(req, res) {
+    try {
+      const { postId } = req.params;
+      const { reason } = req.body;
+
+      // Vérifier que le post existe
+      const targetPost = await prisma.post.findUnique({
+        where: { id_post: parseInt(postId) },
+        include: {
+          user: {
+            select: {
+              id_user: true,
+              username: true
+            }
+          }
+        }
+      });
+
+      if (!targetPost) {
+        return res.status(404).json({
+          error: 'Post not found',
+          message: 'Post non trouvé'
+        });
+      }
+
+      // Soft delete : désactiver le post au lieu de le supprimer complètement
+      await prisma.post.update({
+        where: { id_post: parseInt(postId) },
+        data: {
+          active: false,
+          updated_at: new Date()
+        }
+      });
+
+      logger.warn(`Post deleted: ID ${postId} by admin ${req.user.username}. Reason: ${reason || 'No reason provided'}`);
+
+      res.json({
+        message: 'Post supprimé avec succès',
+        deleted_post: {
+          id_post: targetPost.id_post,
+          author: targetPost.user?.username,
+          deletion_reason: reason || 'No reason provided',
+          deleted_by: req.user.username,
+          deleted_at: new Date()
+        }
+      });
+
+    } catch (error) {
+      logger.error('Delete post error:', error);
+      console.error('Delete post error details:', error);
+      res.status(500).json({ error: 'Erreur lors de la suppression du post' });
+    }
+  }
+
+  /**
    * Changer le rôle d'un utilisateur (admin uniquement)
    */
   static async changeUserRole(req, res) {
@@ -557,7 +616,7 @@ class AdminController {
       if (!new_role || !['USER', 'MODERATOR', 'ADMIN'].includes(new_role)) {
         return res.status(400).json({
           error: 'Validation failed',
-          message: 'Rôle invalide. Rôles autorisés: USER, MODERATOR, ADMIN'
+          message: 'Rôle invalide. Valeurs acceptées: USER, MODERATOR, ADMIN'
         });
       }
 
@@ -574,14 +633,31 @@ class AdminController {
         });
       }
 
-      // Récupérer le rôle correspondant
-      const roleRecord = await prisma.role.findFirst({
+      // Empêcher de rétrograder le dernier admin
+      if (targetUser.role?.role === 'ADMIN' && new_role !== 'ADMIN') {
+        const adminCount = await prisma.user.count({
+          where: {
+            role: { role: 'ADMIN' },
+            is_active: true
+          }
+        });
+
+        if (adminCount <= 1) {
+          return res.status(403).json({
+            error: 'Access denied',
+            message: 'Impossible de rétrograder le dernier administrateur'
+          });
+        }
+      }
+
+      // Trouver l'ID du nouveau rôle
+      const roleRecord = await prisma.role.findUnique({
         where: { role: new_role }
       });
 
       if (!roleRecord) {
         return res.status(400).json({
-          error: 'Role not found',
+          error: 'Invalid role',
           message: 'Rôle non trouvé dans la base de données'
         });
       }
@@ -589,10 +665,13 @@ class AdminController {
       // Mettre à jour le rôle
       await prisma.user.update({
         where: { id_user: parseInt(userId) },
-        data: { id_role: roleRecord.id_role }
+        data: {
+          id_role: roleRecord.id_role,
+          updated_at: new Date()
+        }
       });
 
-      logger.info(`Role changed: ${targetUser.username} from ${targetUser.role?.role} to ${new_role} by ${req.user.username}`);
+      logger.info(`Role changed: ${targetUser.username} -> ${new_role} by ${req.user.username}`);
 
       res.json({
         message: 'Rôle modifié avec succès',
@@ -608,98 +687,6 @@ class AdminController {
       logger.error('Change user role error:', error);
       console.error('Role change error details:', error);
       res.status(500).json({ error: 'Erreur lors du changement de rôle' });
-    }
-  }
-
-  /**
-   * Supprimer un post
-   */
-  static async deletePost(req, res) {
-    try {
-      const { postId } = req.params;
-      const { reason } = req.body;
-
-      const post = await prisma.post.findUnique({
-        where: { id_post: parseInt(postId) },
-        include: { user: true }
-      });
-
-      if (!post) {
-        return res.status(404).json({
-          error: 'Post not found',
-          message: 'Post non trouvé'
-        });
-      }
-
-      // Soft delete : marquer comme inactif
-      await prisma.post.update({
-        where: { id_post: parseInt(postId) },
-        data: { active: false }
-      });
-
-      logger.warn(`Post deleted: ${postId} by ${req.user.username}. Reason: ${reason || 'No reason provided'}`);
-
-      res.json({
-        message: 'Post supprimé avec succès',
-        post: {
-          id_post: post.id_post,
-          author: post.user.username,
-          deletion_reason: reason || 'No reason provided'
-        }
-      });
-
-    } catch (error) {
-      logger.error('Delete post error:', error);
-      console.error('Delete post error details:', error);
-      res.status(500).json({ error: 'Erreur lors de la suppression du post' });
-    }
-  }
-
-  /**
-   * Traiter un signalement
-   */
-  static async processReport(req, res) {
-    try {
-      const { reportId } = req.params;
-      const { action, reason } = req.body;
-
-      if (!action || !['dismiss', 'warn', 'delete', 'ban'].includes(action)) {
-        return res.status(400).json({
-          error: 'Action invalide',
-          message: 'Actions autorisées: dismiss, warn, delete, ban'
-        });
-      }
-
-      try {
-        // Marquer le signalement comme traité
-        await prisma.report.update({
-          where: { id_report: parseInt(reportId) },
-          data: { 
-            processed: true,
-            processed_at: new Date(),
-            processed_by: req.user.id_user,
-            action_taken: action
-          }
-        });
-
-        res.json({
-          message: 'Signalement traité avec succès',
-          action: action,
-          reason: reason
-        });
-
-      } catch (reportError) {
-        console.log('Table report not available, returning success');
-        res.json({
-          message: 'Action simulée (système de signalement indisponible)',
-          action: action
-        });
-      }
-
-    } catch (error) {
-      logger.error('Process report error:', error);
-      console.error('Process report error details:', error);
-      res.status(500).json({ error: 'Erreur lors du traitement du signalement' });
     }
   }
 }
