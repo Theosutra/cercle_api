@@ -1,29 +1,29 @@
-// server.js
+// server.js - CORRECTION FINALE
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
 
-// Import des routes existantes
+// Import des routes
 const authRoutes = require('./src/routes/authRoutes');
 const userRoutes = require('./src/routes/userRoutes');
 const postRoutes = require('./src/routes/postRoutes'); 
 const likeRoutes = require('./src/routes/likeRoutes');
 const followRoutes = require('./src/routes/followRoutes');
 const messageRoutes = require('./src/routes/messageRoutes');
-
-// ✅ NOUVEAU: Import des routes admin
 const adminRoutes = require('./src/routes/adminRoutes');
 
-// Import des middlewares existants
+// Import des middlewares
+const { authenticateToken } = require('./src/middleware/auth');
 const errorHandler = require('./src/middleware/errorHandler');
 const logger = require('./src/utils/logger');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ✅ Configuration CORS
+// Configuration CORS
 const corsOptions = {
   origin: function (origin, callback) {
     const allowedOrigins = [
@@ -47,56 +47,24 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// ✅ Rate limiting intelligent - Corrigé pour éviter les erreurs 429
-const generalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // Plus généreux pour éviter les blocages
-  message: {
-    error: 'Trop de requêtes',
-    retryAfter: 15
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-  // Ne pas compter les requêtes en cache (304) et les succès
-  skip: (req, res) => {
-    return res.statusCode === 304 || res.statusCode < 400;
-  }
-});
-
-// Rate limiter spécifique pour les actions sensibles
-const actionLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000, // 5 minutes
-  max: 200, // Plus généreux pour les likes/posts
-  message: {
-    error: 'Trop d\'actions, ralentissez',
-    retryAfter: 5
-  },
-  skip: (req, res) => res.statusCode === 304
-});
-
-// Rate limiter pour l'authentification (plus restrictif)
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // 10 tentatives de connexion max
-  message: {
-    error: 'Too many authentication attempts',
-    message: 'Please try again in 15 minutes'
-  }
-});
-
-// Appliquer les limiters
+// Rate limiting (uniquement en production)
 if (process.env.NODE_ENV === 'production') {
+  const generalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 1000,
+    message: { error: 'Trop de requêtes', retryAfter: 15 },
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req, res) => res.statusCode === 304 || res.statusCode < 400
+  });
+  
   app.use('/api', generalLimiter);
-  app.use('/api/v1/likes', actionLimiter);
-  app.use('/api/v1/posts', actionLimiter);
-  app.use('/api/v1/auth/login', authLimiter);
-  app.use('/api/v1/auth/register', authLimiter);
   logger.info('✅ Rate limiting enabled for production');
 } else {
   logger.info('⚠️  Rate limiting DISABLED in development mode');
 }
 
-// General middlewares
+// Middlewares généraux
 app.use(morgan('combined', { 
   stream: { write: message => logger.info(message.trim()) }
 }));
@@ -104,7 +72,17 @@ app.use(morgan('combined', {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// ✅ Logging des requêtes pour debug
+// Headers anti-cache pour les APIs
+app.use('/api/v1', (req, res, next) => {
+  res.set({
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Pragma': 'no-cache',
+    'Expires': '0'
+  });
+  next();
+});
+
+// Logging des requêtes pour debug
 app.use((req, res, next) => {
   const start = Date.now();
   
@@ -125,21 +103,29 @@ app.use((req, res, next) => {
   next();
 });
 
-// ✅ API Routes
+// ===============================
+// ✅ ROUTES DANS LE BON ORDRE - CORRECTION FINALE
+// ===============================
+
+// 1. Routes publiques (PAS d'authentification globale)
 app.use('/api/v1/auth', authRoutes);
-app.use('/api/v1/users', userRoutes);
+
+// ✅ CORRECTION CRITIQUE: Posts SANS authentification globale
+// Car postRoutes.js gère déjà l'authentification en interne avec optionalAuth/authenticateToken
 app.use('/api/v1/posts', postRoutes);
-app.use('/api/v1/likes', likeRoutes);
-app.use('/api/v1/follow', followRoutes);
-app.use('/api/v1/messages', messageRoutes);
 
-// ✅ NOUVEAU: Routes admin (backoffice)
-app.use('/api/v1/admin', adminRoutes);
+// 2. Routes protégées (AVEC authentification globale)
+app.use('/api/v1/users', authenticateToken, userRoutes);
+app.use('/api/v1/likes', authenticateToken, likeRoutes);
+app.use('/api/v1/follow', authenticateToken, followRoutes);
+app.use('/api/v1/messages', authenticateToken, messageRoutes);
 
-// ✅ Health check
+// 3. Routes admin (double authentification)
+app.use('/api/v1/admin', authenticateToken, adminRoutes);
+
+// Health check
 app.get('/health', async (req, res) => {
   try {
-    // Test de base de données
     const db = require('./src/utils/database');
     await db.user.count();
     
@@ -162,7 +148,7 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// ✅ Root endpoint
+// Root endpoint
 app.get('/', (req, res) => {
   res.json({
     message: 'Social Network API is running!',
@@ -173,7 +159,7 @@ app.get('/', (req, res) => {
       'Posts with likes and comments',
       'Follow system',
       'Private messaging',
-      'Admin backoffice', // ✅ NOUVEAU
+      'Admin backoffice',
       'Rate limiting',
       'File uploads'
     ],
@@ -184,12 +170,12 @@ app.get('/', (req, res) => {
       likes: '/api/v1/likes',
       follow: '/api/v1/follow',
       messages: '/api/v1/messages',
-      admin: '/api/v1/admin' // ✅ NOUVEAU
+      admin: '/api/v1/admin'
     }
   });
 });
 
-// ✅ 404 handler
+// 404 handler
 app.use('*', (req, res) => {
   res.status(404).json({ 
     error: 'Route not found',
@@ -200,22 +186,21 @@ app.use('*', (req, res) => {
       'POST /api/v1/auth/login',
       'POST /api/v1/auth/register',
       'GET /api/v1/posts/public',
-      'GET /api/v1/admin/dashboard (admin only)' // ✅ NOUVEAU
+      'GET /api/v1/admin/dashboard (admin only)'
     ]
   });
 });
 
-// ✅ Error handler (doit être en dernier)
+// Error handler (doit être en dernier)
 app.use(errorHandler);
 
-// ✅ Test de connexion à la base de données
+// Test de connexion à la base de données
 const testDatabaseConnection = async () => {
   try {
     const db = require('./src/utils/database');
     await db.$connect();
     logger.info('✅ Database connected successfully');
     
-    // Test d'une requête simple
     const userCount = await db.user.count();
     logger.info(`📊 Database stats: ${userCount} users total`);
   } catch (error) {
@@ -224,7 +209,7 @@ const testDatabaseConnection = async () => {
   }
 };
 
-// ✅ Gestion des erreurs non gérées
+// Gestion des erreurs non gérées
 process.on('uncaughtException', (error) => {
   logger.error('Uncaught Exception:', error);
   process.exit(1);
@@ -235,7 +220,7 @@ process.on('unhandledRejection', (reason, promise) => {
   process.exit(1);
 });
 
-// ✅ Fermeture propre
+// Fermeture propre
 process.on('SIGINT', async () => {
   logger.info('SIGINT received, shutting down gracefully');
   process.exit(0);
@@ -246,7 +231,7 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
-// ✅ Démarrage du serveur
+// Démarrage du serveur
 app.listen(PORT, async () => {
   logger.info(`🚀 Server running on port ${PORT}`);
   logger.info(`📱 Frontend URL: ${process.env.FRONTEND_URL || 'http://localhost:5173'}`);
@@ -261,12 +246,11 @@ app.listen(PORT, async () => {
   
   logger.info(`✨ Features enabled:`);
   logger.info(`   - User authentication & roles`);
-  logger.info(`   - Admin backoffice system`); // ✅ NOUVEAU
+  logger.info(`   - Admin backoffice system`);
   logger.info(`   - Posts, likes & comments`);
   logger.info(`   - Follow & messaging system`);
   logger.info(`   - Intelligent rate limiting`);
   
-  // Test de la base de données
   await testDatabaseConnection();
 });
 
