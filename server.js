@@ -14,6 +14,7 @@ const likeRoutes = require('./src/routes/likeRoutes');
 const followRoutes = require('./src/routes/followRoutes');
 const messageRoutes = require('./src/routes/messageRoutes');
 const adminRoutes = require('./src/routes/adminRoutes');
+const notificationRoutes = require('./src/routes/notificationRoutes'); // ✅ AJOUT
 
 // Import des middlewares
 const { authenticateToken } = require('./src/middleware/auth');
@@ -120,6 +121,9 @@ app.use('/api/v1/likes', authenticateToken, likeRoutes);
 app.use('/api/v1/follow', authenticateToken, followRoutes);
 app.use('/api/v1/messages', authenticateToken, messageRoutes);
 
+// ✅ AJOUT: Routes notifications (protégées)
+app.use('/api/v1/notifications', notificationRoutes);
+
 // 3. ✅ CORRECTION ADMIN : Pas de double authentification
 // adminRoutes.js contient déjà router.use(authenticateToken)
 app.use('/api/v1/admin', adminRoutes);
@@ -160,6 +164,7 @@ app.get('/', (req, res) => {
       'Posts with likes and comments',
       'Follow system',
       'Private messaging',
+      'Real-time notifications', // ✅ AJOUT
       'Admin backoffice',
       'Rate limiting',
       'File uploads'
@@ -171,6 +176,7 @@ app.get('/', (req, res) => {
       likes: '/api/v1/likes',
       follow: '/api/v1/follow',
       messages: '/api/v1/messages',
+      notifications: '/api/v1/notifications', // ✅ AJOUT
       admin: '/api/v1/admin'
     }
   });
@@ -187,6 +193,7 @@ app.use('*', (req, res) => {
       'POST /api/v1/auth/login',
       'POST /api/v1/auth/register',
       'GET /api/v1/posts/public',
+      'GET /api/v1/notifications (authenticated)', // ✅ AJOUT
       'GET /api/v1/admin/dashboard (admin only)'
     ]
   });
@@ -250,6 +257,7 @@ app.listen(PORT, async () => {
   logger.info(`   - Admin backoffice system`);
   logger.info(`   - Posts, likes & comments`);
   logger.info(`   - Follow & messaging system`);
+  logger.info(`   - Real-time notifications`); // ✅ AJOUT
   logger.info(`   - Intelligent rate limiting`);
   
   await testDatabaseConnection();
